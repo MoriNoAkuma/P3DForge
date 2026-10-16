@@ -1,0 +1,9 @@
+# models, textures and other binaries: never touch their bytes
+*.p3d binary
+*.paa binary
+*.pac binary
+*.fbx binary
+*.png binary
+*.jpg binary
+*.tga binary
+*.bin binary

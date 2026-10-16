@@ -1,0 +1,28 @@
+# Visual Studio / .NET
+.vs/
+bin/
+obj/
+*.user
+*.suo
+TestResults/
+publish/
+# legacy TypeScript build output
+legacy-ts/node_modules/
+legacy-ts/dist/
+legacy-ts/.build/
+# local test outputs and reference material
+testdata/out/
+docs/reference/raw/
+.build/
+# not published: third-party / private material and big generated files
+legacy-ts/
+screens/
+docs/progress/
+testdata/dzsamples/
+testdata/odol56_building*.p3d
+testdata/corpus.json
+testdata/local.json
+testdata/binarize_alligator.log
+testdata/synthetic/big_grid.p3d
+testdata/
+tools/
