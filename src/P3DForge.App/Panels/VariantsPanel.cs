@@ -221,12 +221,14 @@ public sealed class VariantsPanel : DockPanel
         VariantSession.Changed += () => Dispatcher.BeginInvoke(Build);
         IsVisibleChanged += (_, _) =>
         {
-            if (IsVisible) VariantSession.Load(force: false);
+            if (!IsVisible) return;
+            VariantSession.Load(force: false);
+            if (VariantSession.Variants.Count > 0) VariantSession.Recheck(); // edits made while hidden
         };
         Ed.Changed += c =>
         {
             if ((c & (Change.Document | Change.Load)) != 0 && IsVisible) VariantSession.Load(force: false);
-            else if ((c & Change.Model) != 0 && VariantSession.Variants.Count > 0) VariantSession.Recheck();
+            else if ((c & Change.Model) != 0 && IsVisible && VariantSession.Variants.Count > 0) VariantSession.Recheck();
         };
         Build();
     }

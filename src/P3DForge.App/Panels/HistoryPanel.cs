@@ -84,7 +84,11 @@ public sealed class HistoryPanel : DockPanel
         Children.Add(list);
         Ed.Changed += c =>
         {
-            if ((c & (Change.Model | Change.Document | Change.Load | Change.Selection)) != 0) Refresh();
+            if (IsVisible && (c & (Change.Model | Change.Document | Change.Load | Change.Selection)) != 0) Refresh();
+        };
+        IsVisibleChanged += (_, _) =>
+        {
+            if (IsVisible) Refresh();
         };
         Refresh();
     }

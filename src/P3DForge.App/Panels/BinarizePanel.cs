@@ -107,6 +107,8 @@ public sealed class BinarizePanel : DockPanel
         var model = Ed.Model;
         var path = Ed.Path;
         var name = Ed.Path is not null ? Path.GetFileName(Ed.Path) : Ed.FileName;
+        // model.cfg names the class after the game file: a DeODOL copy "x_mlod.p3d" is binarized as x.p3d
+        if (Path.GetFileNameWithoutExtension(name).EndsWith("_mlod", StringComparison.OrdinalIgnoreCase)) name = Path.GetFileNameWithoutExtension(name)[..^5] + ".p3d";
         running = true;
         startedAt = DateTime.Now;
         cts = new CancellationTokenSource();

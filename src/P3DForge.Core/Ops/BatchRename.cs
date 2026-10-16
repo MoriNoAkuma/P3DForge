@@ -50,12 +50,30 @@ public static partial class BatchRename
         var result = QuotedRx().Replace(text, m =>
         {
             var value = m.Groups[1].Value;
-            if (value.Length == 0 || value.StartsWith('#')) return m.Value;
+            // only paths: slot names, texts and class references in quotes stay as they are
+            if (value.Length == 0 || value.StartsWith('#') || !LooksLikePath(value)) return m.Value;
             bool slash = value.StartsWith('\\');
             if (replacer(slash ? value[1..] : value) is not { } to) return m.Value;
             count++;
             return "\"" + (slash ? "\\" : "") + to.TrimStart('\\') + "\"";
         });
         return count == 0 ? (null, 0) : (result, count);
+    }
+
+    static readonly string[] PathExtensions = [".p3d", ".paa", ".pac", ".rvmat", ".tga", ".png", ".jpg", ".anm", ".asi", ".rtm", ".wss", ".ogg", ".emat", ".ptc", ".edds", ".layout", ".c"];
+
+    static bool LooksLikePath(string s) => s.Contains('\\') || s.Contains('/') || PathExtensions.Any(e => s.EndsWith(e, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Why a file must not be rewritten (null = it may be): inside <paramref name="protectedFolder"/> (the game's own
+    /// files), a binarized model, or a binary (rapified) config.
+    /// </summary>
+    public static string? SkipReason(string file, ReadOnlySpan<byte> bytes, string? protectedFolder)
+    {
+        if (protectedFolder is not null && Path.GetFullPath(file).StartsWith(Path.TrimEndingDirectorySeparator(Path.GetFullPath(protectedFolder)) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            return "the game's file";
+        if (Odol.IsOdol(bytes)) return "binarized";
+        if (bytes.Length >= 4 && bytes[0] == 0 && bytes[1] == (byte)'r' && bytes[2] == (byte)'a' && bytes[3] == (byte)'P') return "binary";
+        return null;
     }
 }
