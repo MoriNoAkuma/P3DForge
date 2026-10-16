@@ -139,28 +139,23 @@ public sealed class BatchRenameFeature : IFeature
         int dzSkipped = 0;
         foreach (var f in files)
         {
-            if (skipFolder is not null && Path.GetFullPath(f).StartsWith(Path.GetFullPath(skipFolder) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-            {
-                dzSkipped++;
-                continue;
-            }
             try
             {
-                var bytes = File.ReadAllBytes(f);
-                if (f.EndsWith(".p3d", StringComparison.OrdinalIgnoreCase))
+                if (skipFolder is not null && BatchRename.SkipReason(f, [], skipFolder) is not null)
                 {
-                    if (Odol.IsOdol(bytes))
-                    {
-                        skipped.Add($"{Path.GetFileName(f)} (binarized)");
-                        continue;
-                    }
-                    var (next, n) = BatchRename.Model(bytes, replacer, options);
-                    if (next is not null) changes.Add(new FileChange(Path.GetFullPath(f), n, true, next));
+                    dzSkipped++;
                     continue;
                 }
-                if (bytes.Length >= 4 && bytes[0] == 0 && bytes[1] == (byte)'r' && bytes[2] == (byte)'a' && bytes[3] == (byte)'P')
+                var bytes = File.ReadAllBytes(f);
+                if (BatchRename.SkipReason(f, bytes, null) is { } why)
                 {
-                    skipped.Add($"{Path.GetFileName(f)} (binary)");
+                    skipped.Add($"{Path.GetFileName(f)} ({why})");
+                    continue;
+                }
+                if (f.EndsWith(".p3d", StringComparison.OrdinalIgnoreCase))
+                {
+                    var (next, n) = BatchRename.Model(bytes, replacer, options);
+                    if (next is not null) changes.Add(new FileChange(Path.GetFullPath(f), n, true, next));
                     continue;
                 }
                 // Latin-1 keeps every byte as it is (paths are ASCII)

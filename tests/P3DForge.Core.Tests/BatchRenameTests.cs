@@ -36,5 +36,19 @@ public class BatchRenameTests
         // a prefix match ignores the leading backslash and keeps it
         var (prefixed, _) = BatchRename.Text(cfg, Attributes.Replacer(@"dz\gear", "x", new ReplaceOptions { Match = PathMatch.Prefix }));
         Assert.Contains("""model="\x\thing.p3d" """.TrimEnd(), prefixed);
+        // strings that are not paths (slot names, texts) stay, even when they contain the text
+        var (slots, k) = BatchRename.Text("""inventorySlot[]={"weaponWrap"}; model="\mymod\wrap.p3d";""", Attributes.Replacer("wrap", "cover", Contains));
+        Assert.Equal(1, k);
+        Assert.Contains("\"weaponWrap\"", slots);
+    }
+
+    [Fact]
+    public void GameFilesBinarizedAndBinaryFilesAreSkipped()
+    {
+        Assert.Equal("the game's file", BatchRename.SkipReason(@"P:\DZ\gear\config.cpp", "class A{};"u8, @"P:\DZ"));
+        Assert.Null(BatchRename.SkipReason(@"P:\DZ_MyMod\config.cpp", "class A{};"u8, @"P:\DZ")); // only inside the folder
+        Assert.Equal("binarized", BatchRename.SkipReason(@"P:\m\a.p3d", "ODOL\x38\0\0\0"u8, null));
+        Assert.Equal("binary", BatchRename.SkipReason(@"P:\m\config.cpp", "\0raP...."u8, null));
+        Assert.Null(BatchRename.SkipReason(@"P:\m\a.rvmat", "ambient[]={1,1,1,1};"u8, null));
     }
 }
