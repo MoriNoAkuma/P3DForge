@@ -35,6 +35,7 @@ public sealed class AnimRig
 
     readonly Lod lod;
     readonly List<BoneNode> bones = [];
+    readonly Dictionary<string, int> byName = new(StringComparer.OrdinalIgnoreCase);
     readonly int[] order; // parents before children
 
     public IReadOnlyList<AnimSource> Sources { get; }
@@ -47,7 +48,6 @@ public sealed class AnimRig
     {
         this.lod = lod;
         var problems = new List<string>();
-        var byName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         int NodeOf(string name)
         {
             if (byName.TryGetValue(name, out int i)) return i;
@@ -223,8 +223,41 @@ public sealed class AnimRig
     public float[] Evaluate(IReadOnlyDictionary<string, double> values)
     {
         var src = lod.Positions;
+        var world = Pose(values, out var hidden);
+        var outPos = (float[])src.Clone();
+        var acc = new Vector3[lod.PointCount];
+        var wsum = new float[lod.PointCount];
+        for (int i = 0; i < bones.Count; i++)
+        {
+            var n = bones[i];
+            if (n.Points.Length == 0 || (world[i].IsIdentity && !hidden[i])) continue;
+            foreach (var (pt, w) in n.Points)
+            {
+                var p = P(lod, pt);
+                var moved = hidden[i] ? n.Centre : Vector3.Transform(p, world[i]); // hidden: collapsed (not drawn in the game)
+                acc[pt] += (moved - p) * w;
+                wsum[pt] += w;
+            }
+        }
+        for (int pt = 0; pt < lod.PointCount; pt++)
+        {
+            if (wsum[pt] <= 0) continue;
+            var d = acc[pt] / Math.Max(1f, wsum[pt]);
+            outPos[pt * 3] += d.X;
+            outPos[pt * 3 + 1] += d.Y;
+            outPos[pt * 3 + 2] += d.Z;
+        }
+        return outPos;
+    }
+
+    /// <summary>The transform (RAW) of a bone with every source at its value, its parents included; null for an unknown bone.</summary>
+    public Matrix4x4? BoneTransform(string bone, IReadOnlyDictionary<string, double> values) =>
+        byName.TryGetValue(bone, out int i) ? Pose(values, out _)[i] : null;
+
+    Matrix4x4[] Pose(IReadOnlyDictionary<string, double> values, out bool[] hidden)
+    {
         var world = new Matrix4x4[bones.Count];
-        var hidden = new bool[bones.Count];
+        hidden = new bool[bones.Count];
         foreach (int i in order)
         {
             var n = bones[i];
@@ -272,31 +305,7 @@ public sealed class AnimRig
             world[i] = m;
             hidden[i] = hide;
         }
-
-        var outPos = (float[])src.Clone();
-        var acc = new Vector3[lod.PointCount];
-        var wsum = new float[lod.PointCount];
-        for (int i = 0; i < bones.Count; i++)
-        {
-            var n = bones[i];
-            if (n.Points.Length == 0 || (world[i].IsIdentity && !hidden[i])) continue;
-            foreach (var (pt, w) in n.Points)
-            {
-                var p = P(lod, pt);
-                var moved = hidden[i] ? n.Centre : Vector3.Transform(p, world[i]); // hidden: collapsed (not drawn in the game)
-                acc[pt] += (moved - p) * w;
-                wsum[pt] += w;
-            }
-        }
-        for (int pt = 0; pt < lod.PointCount; pt++)
-        {
-            if (wsum[pt] <= 0) continue;
-            var d = acc[pt] / Math.Max(1f, wsum[pt]);
-            outPos[pt * 3] += d.X;
-            outPos[pt * 3 + 1] += d.Y;
-            outPos[pt * 3 + 2] += d.Z;
-        }
-        return outPos;
+        return world;
     }
 
     /// <summary>

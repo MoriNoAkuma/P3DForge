@@ -11,6 +11,7 @@ using System.Windows.Threading;
 using P3DForge.App.Anim;
 using P3DForge.App.Dialogs;
 using P3DForge.App.Editor;
+using P3DForge.App.Scene;
 using P3DForge.App.Viewport;
 using P3DForge.Core;
 using P3DForge.Core.Anim;
@@ -201,6 +202,14 @@ public sealed class AnimationsPanel : DockPanel
         {
             if (IsVisible) Refresh();
             else stale = true;
+        };
+        AnimSession.Posed += () =>
+        {
+            if (IsVisible) UpdateOverlay();
+        };
+        ProxySceneHost.Rebuilt += () =>
+        {
+            if (IsVisible) UpdateOverlay(); // a proxy model finished loading
         };
         Ed.Changed += c =>
         {
@@ -724,16 +733,32 @@ public sealed class AnimationsPanel : DockPanel
         const uint yellow = 0xFFD040FF, cyan = 0x40D0FFFF;
         var lines = new List<OverlayLine>();
         var lod = Ed.Lod;
-        // the moving part's box
+        // the moving part's box, turned with the part while the preview animates it
+        var pose = AnimSession.PreviewOn ? AnimSession.Rig?.BoneTransform(a.Selection, AnimSession.Values) ?? Matrix4x4.Identity : Matrix4x4.Identity;
         if (lod.Selection(a.Selection) is { } bone)
         {
-            var pts = Enumerable.Range(0, Math.Min(bone.Points.Length, lod.PointCount)).Where(i => bone.Points[i] != 0)
-                .Select(i => new Vector3(lod.Positions[i * 3], lod.Positions[i * 3 + 1], lod.Positions[i * 3 + 2])).ToList();
+            // the proxy models on the part's proxy triangles move with it (a door is often a proxy): the box holds the
+            // model, not its triangle; the instances are already posed, so they go back to the rest pose like the points
+            bool In(uint p) => p < bone.Points.Length && bone.Points[p] != 0;
+            Matrix4x4.Invert(pose, out var unpose);
+            var pts = new List<Vector3>();
+            var triangles = new HashSet<uint>();
+            var proxies = ProxyScene.Instances;
+            for (int i = 0; i < proxies.Count; i++)
+                if (proxies[i].Model.Lod is { } pl && ProxySceneHost.TopLevelOf(i) is { } top && In(top.A) && In(top.B) && In(top.C))
+                {
+                    triangles.UnionWith([top.A, top.B, top.C]);
+                    var m = proxies[i].Transform * unpose;
+                    for (int k = 0; k < pl.PointCount; k++)
+                        pts.Add(Vector3.Transform(new Vector3(pl.Positions[k * 3], pl.Positions[k * 3 + 1], pl.Positions[k * 3 + 2]), m));
+                }
+            for (int i = 0; i < Math.Min(bone.Points.Length, lod.PointCount); i++)
+                if (bone.Points[i] != 0 && !triangles.Contains((uint)i)) pts.Add(new Vector3(lod.Positions[i * 3], lod.Positions[i * 3 + 1], lod.Positions[i * 3 + 2]));
             if (pts.Count > 0)
             {
                 var min = pts.Aggregate(Vector3.Min);
                 var max = pts.Aggregate(Vector3.Max);
-                Vector3 C(int k) => new((k & 1) == 0 ? min.X : max.X, (k & 2) == 0 ? min.Y : max.Y, (k & 4) == 0 ? min.Z : max.Z);
+                Vector3 C(int k) => Vector3.Transform(new Vector3((k & 1) == 0 ? min.X : max.X, (k & 2) == 0 ? min.Y : max.Y, (k & 4) == 0 ? min.Z : max.Z), pose);
                 foreach (var (i, j) in new[] { (0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0, 4), (1, 5), (2, 6), (3, 7) })
                     lines.Add(new OverlayLine(Coords.RawToRender(C(i)), Coords.RawToRender(C(j)), cyan));
             }
