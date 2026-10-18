@@ -38,6 +38,8 @@ public static class AnimSession
 
     /// <summary>Something in the session changed (load, edit, save, preview values).</summary>
     public static event Action? Changed;
+    /// <summary>The previewed pose changed (every slider move, play frame, preview on / off).</summary>
+    public static event Action? Posed;
 
     public static IEnumerable<AnimDef> All => Own.Concat(Inherited.Where(i => !Own.Any(o => string.Equals(o.Name, i.Name, StringComparison.OrdinalIgnoreCase))));
     public static IEnumerable<Bone> AllBones => InheritedBones.Concat(OwnBones);
@@ -198,11 +200,14 @@ public static class AnimSession
             ProxySceneHost.SetPreview(-1, null);
             previewLod = -1;
         }
-        if (!PreviewOn || vp is null || Rig is not { ActiveAnimations: > 0 } r) return;
-        var pos = r.Evaluate(Values);
-        previewLod = Ed.ActiveLod;
-        vp.SetPreviewPositions(previewLod, pos);
-        ProxySceneHost.SetPreview(previewLod, pos);
+        if (PreviewOn && vp is not null && Rig is { ActiveAnimations: > 0 } r)
+        {
+            var pos = r.Evaluate(Values);
+            previewLod = Ed.ActiveLod;
+            vp.SetPreviewPositions(previewLod, pos);
+            ProxySceneHost.SetPreview(previewLod, pos);
+        }
+        Posed?.Invoke();
     }
 
     /// <summary>Called on document / model changes: reload when the file is another one, keep the preview on the new geometry.</summary>

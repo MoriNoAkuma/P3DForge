@@ -191,6 +191,12 @@ public class AnimTests
         }
         var half = rig.Evaluate(new Dictionary<string, double> { ["user"] = 0.5 });
         Assert.NotEqual(open, half);
+        // the bone's transform (the viewport turns the part's box with it) moves a point exactly as Evaluate does
+        var m = rig.BoneTransform("LID", new Dictionary<string, double> { ["user"] = 1 })!.Value;
+        var moved = System.Numerics.Vector3.Transform(new System.Numerics.Vector3(lod.Positions[0], lod.Positions[1], lod.Positions[2]), m);
+        Assert.Equal(open[1], moved.Y, 4);
+        Assert.Equal(open[2], moved.Z, 4);
+        Assert.Null(rig.BoneTransform("nope", new Dictionary<string, double>()));
     }
 
     [Fact]
