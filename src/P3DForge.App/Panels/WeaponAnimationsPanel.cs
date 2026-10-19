@@ -674,8 +674,7 @@ public sealed class WeaponAnimationsPanel : DockPanel
                          ?? links.Select(l => l.File).FirstOrDefault(f => scripts.TryGetValue(f, out var info) && info.RegistersFireArms);
             if (target is null)
             {
-                Dlg.Fail("The mod has no script with a ModItemRegisterCallbacks ▸ RegisterFireArms override. Create one (4_World) and add it to CfgMods, or copy this line:\n"
-                         + WeaponLinks.Call(className, asi, "pBehavior", ik, st));
+                CreateScript(cur.Class, cur.Model, className, asi, ik, st);
                 return;
             }
             file = target;
@@ -691,6 +690,54 @@ public sealed class WeaponAnimationsPanel : DockPanel
         if (!Dlg.Confirm("Write to script", $"{file}\n\nBefore:\n{before}\n\nAfter:\n{after}", "Write")) return;
         if (!WriteFile(file, newText)) return;
         Ed.Log($"Hands animation of {className} written to {file}");
+        Load(force: true);
+    }
+
+    /// <summary>
+    /// No script registers the mod's weapons yet: writes one (modded ModItemRegisterCallbacks ▸ RegisterFireArms) into the
+    /// weapon's PBO folder and adds its folder to CfgMods of that config.cpp, so the game compiles it — after showing both.
+    /// </summary>
+    void CreateScript(ClassRef cls, string modelValue, string className, string asi, string ik, string st)
+    {
+        var pbo = Path.GetDirectoryName(cls.File)!;
+        static string Id(string s) => new(s.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray());
+        var defaultFile = Path.Combine(pbo, "scripts", "4_World", $"{Id(Path.GetFileName(pbo))}_WeaponAnimations.c");
+        var defaultFolder = WeaponLinks.GameFolder(AppServices.NormalizeGamePath(Path.GetDirectoryName(defaultFile)!), AppServices.NormalizeGamePath(Ed.Path!), modelValue);
+        var form = new Dialogs.Ops.Form("Create the hands animation script",
+                "No script of this mod registers its weapons yet. P3D Forge writes one (modded ModItemRegisterCallbacks ▸ RegisterFireArms) and adds its folder to CfgMods of config.cpp, so the game compiles it. Both are shown before anything is written.")
+            .Text("file", "Script file", defaultFile, t => t.Trim().EndsWith(".c", StringComparison.OrdinalIgnoreCase) ? File.Exists(t.Trim()) ? "The file exists already" : null : "A .c file")
+            .Text("folder", "Its folder in the game", defaultFolder, t => t.Trim().Length == 0 ? "The folder as the game sees it (PBO prefix + path)" : null)
+            .Text("config", "config.cpp", cls.File, t => File.Exists(t.Trim()) ? null : "The file does not exist");
+        if (!form.Show("Next")) return;
+        string file = form.Str("file").Trim(), folder = form.Str("folder").Trim().Replace('\\', '/'), config = form.Str("config").Trim();
+        string configText;
+        try
+        {
+            configText = File.ReadAllText(config);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Dlg.Fail($"Cannot read {config}: {ex.Message}");
+            return;
+        }
+        var newConfig = WeaponLinks.WithWorldScripts(configText, Id(Path.GetFileName(Path.GetDirectoryName(config)!)) + "_Scripts", folder);
+        var script = WeaponLinks.NewScript(className, asi, ik, st);
+        var configNote = newConfig is null ? $"⚠ CfgMods of {config} has no worldScriptModule — add \"{folder}\" to the files[] of one yourself, or the game will not compile the script."
+            : ReferenceEquals(newConfig, configText) ? $"{config} compiles \"{folder}\" already."
+            : $"{config}: \"{folder}\" is added to CfgMods ▸ worldScriptModule.";
+        if (!Dlg.Confirm("Create the hands animation script", $"New file {file}:\n\n{script}\n{configNote}", "Create")) return;
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Dlg.Fail($"Cannot create {Path.GetDirectoryName(file)}: {ex.Message}");
+            return;
+        }
+        if (!WriteFile(file, script)) return;
+        if (newConfig is not null && !ReferenceEquals(newConfig, configText) && !WriteFile(config, newConfig)) return;
+        Ed.Log($"Hands animation of {className}: new script {file}" + (newConfig is null ? " — add its folder to CfgMods yourself" : ""), newConfig is null ? LogLevel.Warn : LogLevel.Info);
         Load(force: true);
     }
 

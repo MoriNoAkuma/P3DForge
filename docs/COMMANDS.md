@@ -386,3 +386,8 @@ Automation: steps "click" (button by caption), "scrollPanels", "perf"; command s
   again only when its time or size changes (the first search of a big work drive can take a minute). Write to script without a
   registration adds to the mod's script, or to the script mod that already registers its other weapons. Unreadable
   sub-folders no longer hide the rest of a folder.
+- Write to script when no script registers the mod's weapons yet: a form proposes the new script (the weapon's PBO folder
+  \scripts\4_World\<pbo>_WeaponAnimations.c, a modded ModItemRegisterCallbacks ▸ RegisterFireArms), its folder as the game sees it
+  (the PBO prefix learnt from model=: P:\MyPack\guns with model = "\guns\..." gives guns/scripts/4_World) and the config.cpp
+  whose CfgMods gets it; both are shown before writing. A config without CfgMods gets a whole CfgMods class (<pbo>_Scripts,
+  worldScriptModule); an existing worldScriptModule gets the folder in its files[]; a CfgMods without one is left to the author.

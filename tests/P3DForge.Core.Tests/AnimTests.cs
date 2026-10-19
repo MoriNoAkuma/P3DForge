@@ -357,6 +357,32 @@ public class AnimTests
     }
 
     [Fact]
+    public void Script_folder_goes_into_CfgMods()
+    {
+        // no CfgMods: a whole one is appended (and reads back)
+        const string cfg = "class CfgPatches\r\n{\r\n\tclass guns { units[] = {}; };\r\n};\r\n";
+        var added = WeaponLinks.WithWorldScripts(cfg, "guns_Scripts", "guns/scripts/4_World")!;
+        Assert.StartsWith(cfg, added);
+        Assert.NotNull(ConfigSpans.Find(added, "CfgMods", "guns_Scripts", "defs", "worldScriptModule"));
+        Assert.Contains("files[] = {\"guns/scripts/4_World\"};", added);
+        // compiled already (the folder or one above it): the same text
+        Assert.Same(added, WeaponLinks.WithWorldScripts(added, "x", "guns/scripts/4_World"));
+        Assert.Same(added, WeaponLinks.WithWorldScripts(added, "x", @"Guns\Scripts\4_World\Weapons"));
+        // another folder joins the files[] there
+        Assert.Contains("{\"guns/scripts/4_World\", \"more/scripts/4_World\"}", WeaponLinks.WithWorldScripts(added, "x", "more/scripts/4_World"));
+        // CfgMods without a world script module: left to the author
+        Assert.Null(WeaponLinks.WithWorldScripts("class CfgMods { class m { type = \"mod\"; }; };", "x", "a/b"));
+    }
+
+    [Fact]
+    public void Game_folder_drops_the_pbo_prefix()
+    {
+        Assert.Equal("guns/scripts/4_World", WeaponLinks.GameFolder(@"LIS\guns\scripts\4_World", @"LIS\guns\rifle\x.p3d", @"\guns\rifle\x.p3d"));
+        Assert.Equal("MyMod/scripts/4_World", WeaponLinks.GameFolder(@"MyMod\scripts\4_World", @"MyMod\x.p3d", @"MyMod\x.p3d"));
+        Assert.Equal("MyMod/scripts/4_World", WeaponLinks.GameFolder(@"MyMod\scripts\4_World", @"MyMod\x.p3d", @"\other\y.p3d")); // the model is elsewhere: as it is
+    }
+
+    [Fact]
     public void Anm_reads_every_vanilla_animation()
     {
         const string root = @"P:\DZ\anims\anm";
