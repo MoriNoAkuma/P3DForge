@@ -32,9 +32,13 @@ public sealed class WeaponAnimationsPanel : DockPanel
     readonly TextBlock status = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(6, 4, 6, 2), FontSize = 12 };
     readonly ComboBox classBox = new() { FontSize = 12, Margin = new Thickness(6, 0, 6, 2) };
     readonly TextBlock classInfo = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(6, 2, 6, 2), FontSize = 12 };
-    readonly ComboBox presetBox = new() { FontSize = 12, Margin = new Thickness(0, 0, 0, 2), ToolTip = "Fill the three files the way a game weapon does it" };
+    readonly ComboBox presetBox = new() { FontSize = 12, Margin = new Thickness(0, 0, 0, 2), ToolTip = "Fills .asi, IK .anm and States .anm with the files a game weapon uses — nothing is written until you press Write" };
     readonly TextBox asiBox, ikBox, statesBox;
     readonly TextBlock linkInfo = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(6, 2, 6, 2), FontSize = 12 };
+    readonly TextBlock pendingInfo = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+    readonly DockPanel pendingRow = new() { Margin = new Thickness(6, 2, 6, 2), Visibility = Visibility.Collapsed };
+    /// <summary>The three files as the script / config.cpp have them (what Revert puts back).</summary>
+    (string Asi, string Ik, string States) saved = ("", "", "");
     readonly StackPanel bones = new() { Margin = new Thickness(6, 2, 6, 4) };
     readonly ComboBox previewBox = new() { FontSize = 12, Margin = new Thickness(6, 0, 6, 2), ToolTip = "Plays an animation on the model through boneRemap — display only, the model is not changed" };
     readonly Slider frameSlider = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 4, 0), IsEnabled = false };
@@ -73,7 +77,7 @@ public sealed class WeaponAnimationsPanel : DockPanel
         form.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         form.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         presetBox.SelectionChanged += (_, _) => ApplyPreset();
-        AddRow(form, "Like", presetBox, null);
+        AddRow(form, "From game", presetBox, null);
         asiBox = Field();
         ikBox = Field();
         statesBox = Field();
@@ -82,6 +86,19 @@ public sealed class WeaponAnimationsPanel : DockPanel
         AddRow(form, "States .anm", statesBox, () => Pick(statesBox, AnimFiles.States, "Weapon states (.anm) — moves bolt, trigger, magazine… (weaponStateAnim)"));
         content.Children.Add(form);
         content.Children.Add(linkInfo);
+        var revert = Btn("Revert", "Put back the files the script and config.cpp have", () =>
+        {
+            ShowClass();
+            loading = true;
+            presetBox.SelectedIndex = 0;
+            loading = false;
+        });
+        revert.Margin = new Thickness(6, 0, 0, 0);
+        DockPanel.SetDock(revert, Dock.Right);
+        pendingRow.Children.Add(revert);
+        pendingRow.Children.Add(pendingInfo);
+        pendingInfo.Foreground = (Brush)FindResource("Editor.Warn");
+        content.Children.Add(pendingRow);
         var buttons = new WrapPanel { Margin = new Thickness(4, 2, 4, 2) };
         buttons.Children.Add(Btn("Write to script", "Adds or updates pType.AddItemInHandsProfileIK(…) for this class in the mod's ModItemRegisterCallbacks script", WriteScript));
         buttons.Children.Add(Btn("Write weaponStateAnim", "Sets weaponStateAnim of this class in its config.cpp to the states .anm", WriteConfig));
@@ -117,10 +134,17 @@ public sealed class WeaponAnimationsPanel : DockPanel
             if (loading) return;
             ShowBones();
             FillPreview();
+            UpdatePending();
         };
         asiBox.TextChanged += (_, _) =>
         {
-            if (!loading) FillPreview();
+            if (loading) return;
+            FillPreview();
+            UpdatePending();
+        };
+        ikBox.TextChanged += (_, _) =>
+        {
+            if (!loading) UpdatePending();
         };
         IsVisibleChanged += (_, _) =>
         {
@@ -267,9 +291,11 @@ public sealed class WeaponAnimationsPanel : DockPanel
             classInfo.Text = "";
             asiBox.Text = ikBox.Text = statesBox.Text = "";
             linkInfo.Text = "";
+            saved = ("", "", "");
             loading = false;
             ShowBones();
             FillPreview();
+            UpdatePending();
             return;
         }
         var chain = library.Chain("CfgWeapons", cur.Class.Name);
@@ -286,9 +312,24 @@ public sealed class WeaponAnimationsPanel : DockPanel
             ? "No AddItemInHandsProfileIK for this class (or its bases) in the mod's scripts yet — fill the files and press Write to script."
             : $"Registered in {link.File}" + (string.Equals(link.ClassName, cur.Class.Name, StringComparison.OrdinalIgnoreCase) ? "" : $" (for the base class {link.ClassName})");
         linkInfo.Foreground = (Brush)FindResource(link is null ? "Editor.Warn" : "Editor.Dim");
+        saved = (asiBox.Text.Trim(), ikBox.Text.Trim(), statesBox.Text.Trim());
         loading = false;
         ShowBones();
         FillPreview();
+        UpdatePending();
+    }
+
+    /// <summary>Says which file fields differ from what the script / config.cpp have (nothing is written before Write).</summary>
+    void UpdatePending()
+    {
+        var changed = new List<string>();
+        if (asiBox.Text.Trim() != saved.Asi) changed.Add(".asi");
+        if (ikBox.Text.Trim() != saved.Ik) changed.Add("IK .anm");
+        if (statesBox.Text.Trim() != saved.States) changed.Add("States .anm");
+        pendingRow.Visibility = changed.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        pendingInfo.Text = Current is null
+            ? "Preview only: no weapon class uses this model, so nothing can be written yet."
+            : $"Not written yet: {string.Join(", ", changed)}. Write saves it; Revert puts back what the files have.";
     }
 
     HandsLink? LinkFor(List<ClassRef> chain)
@@ -441,10 +482,12 @@ public sealed class WeaponAnimationsPanel : DockPanel
         if (loading || presetBox.SelectedIndex <= 0 || presetBox.SelectedItem is not string name) return;
         var p = AnimFiles.Presets(AppServices.Settings.ProjectRoot).FirstOrDefault(x => x.Name == name);
         if (p is null) return;
+        // all three, so no file of the weapon chosen before stays mixed in; a file the game weapon has none of is left empty
         asiBox.Text = p.Asi;
-        if (p.Ik.Length > 0) ikBox.Text = p.Ik;
-        if (p.States.Length > 0) statesBox.Text = p.States;
-        Ed.Log($"Weapon animations like the game's {name}: {p.Asi}" + (p.Ik.Length == 0 ? " (no IK .anm found — choose one)" : "") + (p.States.Length == 0 ? " (no states .anm found — choose one)" : ""));
+        ikBox.Text = p.Ik;
+        statesBox.Text = p.States;
+        Ed.Log($"Weapon animations from the game's {name}: {p.Asi}" + (p.Ik.Length == 0 ? " (no IK .anm found — choose one)" : "") + (p.States.Length == 0 ? " (no states .anm found — choose one)" : ""),
+            p.Ik.Length == 0 || p.States.Length == 0 ? LogLevel.Warn : LogLevel.Info);
     }
 
     void Pick(TextBox box, Func<string, string?, List<string>> source, string title)

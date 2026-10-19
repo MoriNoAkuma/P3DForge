@@ -373,3 +373,9 @@ Automation: steps "click" (button by caption), "scrollPanels", "perf"; command s
   weapon's own .asi (its #parent files are not read) played on the model — slider and Play; only model bones of the model.cfg
   skeleton move, through boneRemap, like in the game; display only. The status line says which parts it moves.
 - weaponAnims.setFiles also takes "preview=<text of a list item>;frame=<n>" (automation).
+
+### 0.2.1 — weapon animation wiring for any mod layout
+
+- "Like" is now "From game": it fills all three files of the chosen game weapon (a file the weapon has none of is left empty,
+  never kept from the weapon chosen before); a line under the fields says what is not written yet, Revert puts back what the
+  script / config.cpp have.
