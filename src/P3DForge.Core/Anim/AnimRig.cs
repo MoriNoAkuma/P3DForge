@@ -254,6 +254,10 @@ public sealed class AnimRig
     public Matrix4x4? BoneTransform(string bone, IReadOnlyDictionary<string, double> values) =>
         byName.TryGetValue(bone, out int i) ? Pose(values, out _)[i] : null;
 
+    /// <summary>The transform of a bone's parent (identity for a root or unknown bone): it carries the bone's own axes.</summary>
+    public Matrix4x4 ParentTransform(string bone, IReadOnlyDictionary<string, double> values) =>
+        byName.TryGetValue(bone, out int i) && bones[i].Parent >= 0 ? Pose(values, out _)[bones[i].Parent] : Matrix4x4.Identity;
+
     Matrix4x4[] Pose(IReadOnlyDictionary<string, double> values, out bool[] hidden)
     {
         var world = new Matrix4x4[bones.Count];

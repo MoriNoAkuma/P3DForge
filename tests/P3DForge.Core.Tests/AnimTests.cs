@@ -182,12 +182,13 @@ public class AnimTests
         var at0 = rig.Evaluate(new Dictionary<string, double> { ["user"] = 0 });
         Assert.Equal(lod.Positions, at0);
         var open = rig.Evaluate(new Dictionary<string, double> { ["user"] = 1 });
-        // the hinge (back edge, z = -0.5, y = 1) stays; the front edge (z = +0.5) swings to y = 1 ± 1
+        // the hinge (back edge, z = -0.5, y = 1) stays; the front edge (z = +0.5) swings down to y = 0: a positive angle
+        // about +X turns +Z towards -Y, the direction the game uses (checked in game on vehicle doors)
         for (int i = 0; i < lod.PointCount; i++)
         {
             float z = lod.Positions[i * 3 + 2], y = lod.Positions[i * 3 + 1];
             if (Math.Abs(z + 0.5f) < 1e-4 && Math.Abs(y - 1) < 1e-4) Assert.Equal(1, open[i * 3 + 1], 4);
-            if (Math.Abs(z - 0.5f) < 1e-4 && Math.Abs(y - 1) < 1e-4) Assert.Equal(1, Math.Abs(open[i * 3 + 1] - 1), 3);
+            if (Math.Abs(z - 0.5f) < 1e-4 && Math.Abs(y - 1) < 1e-4) Assert.Equal(0, open[i * 3 + 1], 3);
         }
         var half = rig.Evaluate(new Dictionary<string, double> { ["user"] = 0.5 });
         Assert.NotEqual(open, half);
@@ -212,8 +213,13 @@ public class AnimTests
         Assert.True(hidden.Chunk(3).Select(c => (c[0], c[1], c[2])).Distinct().Count() == 1); // collapsed to a point
         // a child bone ("lid" under "frame") moves with its parent's translation
         var frame = new AnimDef { Name = "f", Type = "translationY", Source = "f", Selection = "frame", Offset1 = 1 };
-        var child = new AnimRig(lod, memory, [new Bone("frame", ""), new Bone("lid", "frame")], [frame]).Evaluate(new Dictionary<string, double> { ["f"] = 1 });
+        var childRig = new AnimRig(lod, memory, [new Bone("frame", ""), new Bone("lid", "frame")], [frame]);
+        var child = childRig.Evaluate(new Dictionary<string, double> { ["f"] = 1 });
         Assert.Equal(lod.Positions[1] + 1, child[1], 4);
+        // the child's axes are carried by the parent (the viewport draws the child's axis there)
+        var up = childRig.ParentTransform("lid", new Dictionary<string, double> { ["f"] = 1 });
+        Assert.Equal(1, up.M42, 4);
+        Assert.True(childRig.ParentTransform("frame", new Dictionary<string, double> { ["f"] = 1 }).IsIdentity);
     }
 
     [Fact]

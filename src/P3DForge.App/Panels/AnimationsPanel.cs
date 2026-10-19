@@ -779,8 +779,11 @@ public sealed class AnimationsPanel : DockPanel
                 (p0, p1) = (new Vector3(axisLod.Positions[bi * 3], axisLod.Positions[bi * 3 + 1], axisLod.Positions[bi * 3 + 2]),
                     new Vector3(axisLod.Positions[ei * 3], axisLod.Positions[ei * 3 + 1], axisLod.Positions[ei * 3 + 2]));
         }
-        if (p0 is { } q0 && p1 is { } q1 && (q1 - q0).LengthSquared() > 1e-12f)
+        if (p0 is { } r0 && p1 is { } r1 && (r1 - r0).LengthSquared() > 1e-12f)
         {
+            // a child bone's axis rides on its parent (a handle on an opening door)
+            var carry = AnimSession.PreviewOn && AnimSession.Rig is { } rig ? rig.ParentTransform(a.Selection, AnimSession.Values) : Matrix4x4.Identity;
+            var (q0, q1) = (Vector3.Transform(r0, carry), Vector3.Transform(r1, carry));
             var d = q1 - q0;
             var a0 = Coords.RawToRender(q0 - d * 0.5f);
             var a1 = Coords.RawToRender(q1 + d * 0.5f);

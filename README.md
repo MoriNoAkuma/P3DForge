@@ -36,6 +36,10 @@ Status: **early (0.1)** — usable for everyday editing; expect rough edges. `.a
 Get `P3DForge.exe` from [Releases](https://github.com/MoriNoAkuma/P3DForge/releases) — one file, nothing to install
 (the .NET runtime is inside). Put it anywhere and run it.
 
+The exe is not code-signed, so on the first start Windows SmartScreen may say "Windows protected your PC" (unknown
+publisher): click **More info ▸ Run anyway**. Every release is built from this repository by GitHub Actions
+([workflow](.github/workflows/release.yml)), so you can check what went into it or build it yourself.
+
 ## Requirements
 
 - Windows 10 / 11 x64, a GPU with OpenGL 4.1
@@ -72,6 +76,8 @@ Many tests read model files that are not in the repository (a local `testdata/` 
 `P:\DZ`); without them they are skipped:
 - `testdata/dzsamples/` — the DayZ Tools sample models (`Test_Building_sample_building.p3d`, …)
 - `testdata/local.json` — your own models, e.g. `{ "weapon": "P:\\MyMod\\gun\\gun.p3d", "btr": "P:\\MyCar\\car.p3d" }`
+
+GitHub Actions builds the solution and runs the tests on every push and pull request ([workflow](.github/workflows/tests.yml)).
 
 ## Documentation
 
