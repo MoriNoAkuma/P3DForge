@@ -142,6 +142,7 @@ public sealed class WeaponAnimationsPanel : DockPanel
         asiBox.TextChanged += (_, _) =>
         {
             if (loading) return;
+            ShowBones(); // without a weapon class the .asi's game weapon gives the boneRemap
             FillPreview();
             UpdatePending();
         };
@@ -473,6 +474,8 @@ public sealed class WeaponAnimationsPanel : DockPanel
         }
         var check = BoneLinks(anm);
         int bad = check.Count(c => !c.Ok && c.ModelBone.Length > 0);
+        if (Remap().GameClass is { } gameClass)
+            bones.Children.Add(Note($"boneRemap of the game's {gameClass} (the weapon of the chosen .asi): this model has no weapon class with a boneRemap yet.", "Editor.Warn"));
         bones.Children.Add(Note($"{anm.Count} bones in {Path.GetFileName(statesFile)} · skeleton \"{AnimSession.Skeleton}\" ({AnimSession.AllBones.Count()} bones) · named selections of LOD {Core.LodNames.Name(CheckedLod.Resolution)}",
             "Editor.Dim"));
         foreach (var c in check)
@@ -489,10 +492,35 @@ public sealed class WeaponAnimationsPanel : DockPanel
     static Lod CheckedLod => Ed.Model.Lods.FirstOrDefault(l => l.Resolution < 10000) ?? Ed.Lod;
 
     /// <summary>Every bone of an animation followed through boneRemap to the model (see <see cref="WeaponLinks.Check"/>).</summary>
-    List<BoneLink> BoneLinks(IReadOnlyList<string> anmBones)
+    List<BoneLink> BoneLinks(IReadOnlyList<string> anmBones) =>
+        WeaponLinks.Check(anmBones, Remap().Pairs, AnimSession.AllBones.Select(b => b.Name).ToList(), CheckedLod.Selections.Select(s => s.Name).ToList());
+
+    /// <summary>
+    /// The boneRemap to follow: the weapon class's; without a class (or a boneRemap in its chain) that of the game weapon the
+    /// chosen .asi is registered for — so a model with no config.cpp yet can be tried with a game weapon's animations.
+    /// </summary>
+    (List<(string ModelBone, string AnmBone)> Pairs, string? GameClass) Remap()
     {
-        var remap = Current is { } cur && library is not null ? WeaponLinks.BoneRemap(library.Get("CfgWeapons", cur.Class.Name, "boneRemap", out _)) : [];
-        return WeaponLinks.Check(anmBones, remap, AnimSession.AllBones.Select(b => b.Name).ToList(), CheckedLod.Selections.Select(s => s.Name).ToList());
+        if (library is null) return ([], null);
+        if (Current is { } cur && library.Get("CfgWeapons", cur.Class.Name, "boneRemap", out _) is { } own) return (WeaponLinks.BoneRemap(own), null);
+        if (GameClassOf(asiBox.Text) is { } game && library.Get("CfgWeapons", game, "boneRemap", out _) is { } theirs) return (WeaponLinks.BoneRemap(theirs), game);
+        return ([], null);
+    }
+
+    /// <summary>The game's weapon class registered with an .asi in the game's own script (player_main_cz527.asi → CZ527_Base).</summary>
+    static string? GameClassOf(string asi)
+    {
+        var file = Path.Combine(AppServices.Settings.ProjectRoot, "scripts", "4_world", "entities", "manbase", "dayzplayer", "dayzplayercfgbase.c");
+        if (asi.Trim().Length == 0 || !File.Exists(file)) return null;
+        static string Norm(string p) => p.Replace('\\', '/').Trim().TrimStart('/').ToLowerInvariant();
+        try
+        {
+            return WeaponLinks.FindLinks(file, ReadCached(file)).FirstOrDefault(l => Norm(l.Asi) == Norm(asi))?.ClassName;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     // ---- preview --------------------------------------------------------------------------------
@@ -540,8 +568,10 @@ public sealed class WeaponAnimationsPanel : DockPanel
             Ed.Log($"Weapon animations: {Path.GetFileName(file)} cannot be played (damaged, or an old SET4 file)", LogLevel.Warn);
             return;
         }
-        // like the game: only model bones of the skeleton move
-        clipLinks = [.. BoneLinks(clip.Bones.Select(b => b.Name).ToList()).Where(l => l.ModelBone.Length > 0 && l.InSkeleton).Select(l => (l.ModelBone, l.AnmBone))];
+        // like the game: only model bones of the skeleton move — a model without a model.cfg skeleton yet shows its named
+        // selections moving (the bone check above says the game needs them as bones)
+        bool noSkeleton = !AnimSession.AllBones.Any();
+        clipLinks = [.. BoneLinks(clip.Bones.Select(b => b.Name).ToList()).Where(l => l.ModelBone.Length > 0 && (l.InSkeleton || noSkeleton && l.InModel)).Select(l => (l.ModelBone, l.AnmBone))];
         Ed.Log(clipLinks.Count == 0
             ? $"Weapon animations: {Path.GetFileName(file)} moves no bone of this model (boneRemap / skeleton)"
             : $"Weapon animations: {Path.GetFileName(file)} — {clip.Frames} frames at {clip.Fps} fps, moves {string.Join(", ", clipLinks.Select(l => l.ModelBone))}",

@@ -391,3 +391,7 @@ Automation: steps "click" (button by caption), "scrollPanels", "perf"; command s
   (the PBO prefix learnt from model=: P:\MyPack\guns with model = "\guns\..." gives guns/scripts/4_World) and the config.cpp
   whose CfgMods gets it; both are shown before writing. A config without CfgMods gets a whole CfgMods class (<pbo>_Scripts,
   worldScriptModule); an existing worldScriptModule gets the folder in its files[]; a CfgMods without one is left to the author.
+- A model without a weapon class (no config.cpp yet), or whose class has no boneRemap, is checked and previewed with the
+  boneRemap of the game weapon the chosen .asi is registered for (from the game's own dayzplayercfgbase.c on the work drive,
+  e.g. player_main_cz527.asi → CZ527_Base); the bone check says so. Without a model.cfg skeleton the preview moves the
+  named selections anyway, while the bone check lists which of them the game needs as skeleton bones.
