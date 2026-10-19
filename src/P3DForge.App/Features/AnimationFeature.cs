@@ -97,7 +97,7 @@ public sealed class AnimationFeature : IFeature
             {
                 Id = "weaponAnims.setFiles",
                 Label = "Weapon Animations: Set Files (automation)",
-                Description = "Automation: flag automation.answer = \"asi=…;ik=…;states=…\" or \"like=svd\"",
+                Description = "Automation: flag automation.answer = \"asi=…;ik=…;states=…\" or \"like=svd\"; \"preview=states;frame=1\" plays one",
                 Execute = () => Panel()?.SetFiles(Dialogs.Dlg.TakeAnswer() ?? ""),
             },
             new Command

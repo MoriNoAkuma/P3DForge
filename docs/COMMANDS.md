@@ -363,3 +363,13 @@ Automation: steps "click" (button by caption), "scrollPanels", "perf"; command s
   re-validates with a message); Camo & Damage finds worn clothing through ClothingTypes male / female and DeODOL copies
   "name_mlod.p3d" as name.p3d, ignores hidden selections a clothing model does not carry (camoGround / camoMale on a female
   model), switches to Final shading when the variant changes rvmats.
+
+### 0.2.0 — .anm animations
+
+- .anm files (Enfusion, compiled by Workbench from .txa) are read: SET5 (translation, rotation) and SET6 (+ scale) — per bone the
+  key frames and 16-bit values scaled into the bone's range; every vanilla SET5 / SET6 file reads (the 10 old SET4 files do not).
+  The .anm space is Z-up: model (x, y, z) = .anm (x, z, -y); a weapon bone's transform turns about the model's origin.
+- Weapon Animations panel ▸ Preview in the viewport: the states .anm (frame 0 closed, 1 open, 2 jammed) or any animation of the
+  weapon's own .asi (its #parent files are not read) played on the model — slider and Play; only model bones of the model.cfg
+  skeleton move, through boneRemap, like in the game; display only. The status line says which parts it moves.
+- weaponAnims.setFiles also takes "preview=<text of a list item>;frame=<n>" (automation).
