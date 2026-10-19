@@ -379,3 +379,10 @@ Automation: steps "click" (button by caption), "scrollPanels", "perf"; command s
 - "Like" is now "From game": it fills all three files of the chosen game weapon (a file the weapon has none of is left empty,
   never kept from the weapon chosen before); a line under the fields says what is not written yet, Revert puts back what the
   script / config.cpp have.
+- The AddItemInHandsProfileIK registration is also found in script mods elsewhere on the work drive (scripts packed as a mod of
+  their own, e.g. P:\MyMod_Scripts), but only for weapon classes of the model's own mod: every .c of the mod's folder and the
+  4_World scripts of the other folders; the game's data folders (DZ, scripts, bin, core, gui, graphics, languagecore, system)
+  and packed @mods are left out. What each script holds is kept in %LOCALAPPDATA%\P3DForge\handslinks.json and a script is read
+  again only when its time or size changes (the first search of a big work drive can take a minute). Write to script without a
+  registration adds to the mod's script, or to the script mod that already registers its other weapons. Unreadable
+  sub-folders no longer hide the rest of a folder.

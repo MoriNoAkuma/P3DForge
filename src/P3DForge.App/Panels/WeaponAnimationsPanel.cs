@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -50,6 +51,8 @@ public sealed class WeaponAnimationsPanel : DockPanel
     int previewLod = -1;
     ConfigLibrary? library;
     List<HandsLink> links = [];
+    /// <summary>The scripts of the last search (see <see cref="Scripts"/>).</summary>
+    Dictionary<string, ScriptInfo> scripts = [];
     string? loadedFor;
     bool loading;
 
@@ -186,14 +189,19 @@ public sealed class WeaponAnimationsPanel : DockPanel
             status.Text = "Save the model first — its config.cpp and scripts are looked up around it.";
             return;
         }
-        status.Text = "Reading config.cpp files and scripts…";
+        status.Text = File.Exists(ScriptCacheFile)
+            ? "Reading config.cpp files and scripts…"
+            : "Reading config.cpp files and scripts — the first search of the work drive reads every script once and can take a minute…";
         status.Foreground = (Brush)FindResource("Editor.Dim");
         var modRoot = ModRoot(p3d)!;
         var projectRoot = AppServices.Settings.ProjectRoot;
-        var (lib, found, scriptLinks, warnings) = await Task.Run(() => Scan(p3d, modRoot, projectRoot, force));
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var (lib, found, scriptLinks, warnings, scriptFiles) = await Task.Run(() => Scan(p3d, modRoot, projectRoot));
+        if (watch.ElapsedMilliseconds > 1000) Ed.Log($"[perf] weapon animations: configs and scripts read in {watch.ElapsedMilliseconds} ms");
         if (loadedFor != p3d) return;
         library = lib;
         links = scriptLinks;
+        scripts = scriptFiles;
         loading = true;
         classBox.Items.Clear();
         foreach (var (c, model, exact) in found)
@@ -203,7 +211,7 @@ public sealed class WeaponAnimationsPanel : DockPanel
         loading = false;
         status.Text = found.Count == 0
             ? $"No CfgWeapons class in the config.cpp files of {modRoot} has model = …\\{Path.GetFileName(p3d)}."
-            : $"{found.Count} weapon class{(found.Count == 1 ? "" : "es")} use this model · {lib.Files.Count} config files · {scriptLinks.Count} hands registrations in {modRoot}";
+            : $"{found.Count} weapon class{(found.Count == 1 ? " uses" : "es use")} this model · {lib.Files.Count} config files · {scriptLinks.Count} hands registration{(scriptLinks.Count == 1 ? "" : "s")} (in {modRoot} and script mods of its weapons on the work drive)";
         if (warnings.Count > 0) status.Text += "\n⚠ " + string.Join("\n⚠ ", warnings.Take(4));
         status.Foreground = (Brush)FindResource(found.Count == 0 || warnings.Count > 0 ? "Editor.Warn" : "Editor.Dim");
         if (classBox.Items.Count > 0) classBox.SelectedIndex = 0;
@@ -222,7 +230,7 @@ public sealed class WeaponAnimationsPanel : DockPanel
         return text;
     }
 
-    static (ConfigLibrary, List<(ClassRef, string, bool)>, List<HandsLink>, List<string>) Scan(string p3d, string modRoot, string projectRoot, bool force)
+    static (ConfigLibrary, List<(ClassRef, string, bool)>, List<HandsLink>, List<string>, Dictionary<string, ScriptInfo>) Scan(string p3d, string modRoot, string projectRoot)
     {
         var warnings = new List<string>();
         var lib = new ConfigLibrary();
@@ -238,21 +246,122 @@ public sealed class WeaponAnimationsPanel : DockPanel
         foreach (var (c, model, exact) in found)
             if (!exact)
                 warnings.Add($"{c.Name}: model = \"{model}\" does not match this file ({game}) — the game looks for P:\\{ConfigLibrary.NormalizeModel(model)}");
-        var scriptLinks = new List<HandsLink>();
-        foreach (var f in SafeFiles(modRoot, "*.c", 2000))
+        // scripts often ship as a mod of their own (P:\MyMod_Scripts): those count too, but only for this mod's own weapon
+        // classes — another mod's registrations are never shown or written
+        var modDir = Path.GetFullPath(modRoot).TrimEnd('\\') + "\\";
+        bool Own(HandsLink l) => l.File.StartsWith(modDir, StringComparison.OrdinalIgnoreCase)
+                                 || lib.Find("CfgWeapons", l.ClassName) is { } c && c.File.StartsWith(modDir, StringComparison.OrdinalIgnoreCase);
+        var scripts = Scripts(projectRoot, modRoot);
+        var scriptLinks = scripts.SelectMany(s => s.Value.Links).Where(Own).ToList();
+        return (lib, found, scriptLinks, warnings, scripts);
+    }
+
+    /// <summary>Top-level work-drive folders that hold the game's own data (DayZ Tools): not searched for the mod's scripts.</summary>
+    static readonly HashSet<string> GameFolders = new(StringComparer.OrdinalIgnoreCase) { "DZ", "scripts", "bin", "core", "gui", "graphics", "languagecore", "system" };
+
+    /// <summary>What a script holds for this panel: its hands registrations, and whether it overrides RegisterFireArms.</summary>
+    sealed record ScriptInfo(DateTime Stamp, long Size, List<HandsLink> Links, bool RegistersFireArms);
+
+    static Dictionary<string, ScriptInfo>? scriptCache;
+
+    static string ScriptCacheFile => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "P3DForge", "handslinks.json");
+
+    /// <summary>
+    /// The scripts that can register this mod's weapons: every .c of the mod's own folder, and the 4_World scripts
+    /// (ModItemRegisterCallbacks lives there) of the other work-drive folders — the game's data and packed (@) mods left out.
+    /// Kept in %LOCALAPPDATA%\P3DForge\handslinks.json: a file is read again only when its time or size changes, so the
+    /// first search of a big work drive reads every script once (it can take a minute), later ones only the changes.
+    /// </summary>
+    static Dictionary<string, ScriptInfo> Scripts(string projectRoot, string modRoot)
+    {
+        lock (GameFolders)
         {
-            string text;
+            var cache = scriptCache ??= LoadScriptCache();
+            var modDir = Path.GetFullPath(modRoot).TrimEnd('\\');
+            var folders = new List<(DirectoryInfo Dir, bool Own)>();
             try
             {
-                text = ReadCached(f);
+                foreach (var d in new DirectoryInfo(projectRoot).EnumerateDirectories())
+                    if (!GameFolders.Contains(d.Name) && !d.Name.StartsWith('@')) folders.Add((d, string.Equals(d.FullName.TrimEnd('\\'), modDir, StringComparison.OrdinalIgnoreCase)));
             }
-            catch
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                continue;
+                // no work drive: only the mod's own folder
             }
-            if (text.Contains("AddItemInHandsProfileIK", StringComparison.Ordinal)) scriptLinks.AddRange(WeaponLinks.FindLinks(f, text));
+            if (!folders.Any(f => f.Own) && Directory.Exists(modDir)) folders.Add((new DirectoryInfo(modDir), true));
+            var result = new Dictionary<string, ScriptInfo>(StringComparer.OrdinalIgnoreCase);
+            bool changed = false;
+            var options = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
+            foreach (var (dir, own) in folders)
+            {
+                IEnumerable<FileInfo> files;
+                try
+                {
+                    files = dir.EnumerateFiles("*.c", options).ToList();
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    continue;
+                }
+                foreach (var f in files)
+                {
+                    if (!own && !f.FullName.Contains(@"\4_World\", StringComparison.OrdinalIgnoreCase)) continue;
+                    // the time and size come with the folder listing: an unchanged script is not opened again
+                    if (!cache.TryGetValue(f.FullName, out var info) || info.Stamp != f.LastWriteTimeUtc || info.Size != f.Length)
+                    {
+                        cache[f.FullName] = info = ReadScript(f);
+                        changed = true;
+                    }
+                    result[f.FullName] = info;
+                }
+            }
+            var root = Path.GetFullPath(projectRoot);
+            foreach (var gone in cache.Keys.Where(k => k.StartsWith(root, StringComparison.OrdinalIgnoreCase) && !result.ContainsKey(k)).ToList())
+                changed |= cache.Remove(gone);
+            if (changed) SaveScriptCache(cache);
+            return result;
         }
-        return (lib, found, scriptLinks, warnings);
+    }
+
+    static ScriptInfo ReadScript(FileInfo f)
+    {
+        try
+        {
+            var text = File.ReadAllText(f.FullName);
+            var links = text.Contains("AddItemInHandsProfileIK", StringComparison.Ordinal) ? WeaponLinks.FindLinks(f.FullName, text) : [];
+            return new ScriptInfo(f.LastWriteTimeUtc, f.Length, links, text.Contains("RegisterFireArms", StringComparison.Ordinal));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return new ScriptInfo(f.LastWriteTimeUtc, f.Length, [], false);
+        }
+    }
+
+    static Dictionary<string, ScriptInfo> LoadScriptCache()
+    {
+        try
+        {
+            using var fs = File.OpenRead(ScriptCacheFile);
+            if (JsonSerializer.Deserialize<Dictionary<string, ScriptInfo>>(fs) is { } saved) return new(saved, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or NotSupportedException)
+        {
+            // no cache yet, or an old one: the scripts are read again
+        }
+        return new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    static void SaveScriptCache(Dictionary<string, ScriptInfo> cache)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(ScriptCacheFile)!);
+            File.WriteAllText(ScriptCacheFile, JsonSerializer.Serialize(cache));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // only a cache
+        }
     }
 
     static void TryAdd(ConfigLibrary lib, string file, List<string> warnings)
@@ -271,7 +380,8 @@ public sealed class WeaponAnimationsPanel : DockPanel
     {
         try
         {
-            return Directory.Exists(dir) ? Directory.EnumerateFiles(dir, pattern, SearchOption.AllDirectories).Take(max).ToList() : [];
+            // one unreadable sub-folder must not hide the rest
+            return Directory.Exists(dir) ? Directory.EnumerateFiles(dir, pattern, new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true }).Take(max).ToList() : [];
         }
         catch
         {
@@ -309,7 +419,7 @@ public sealed class WeaponAnimationsPanel : DockPanel
         ikBox.Text = link?.Ik ?? "";
         statesBox.Text = link?.States is { Length: > 0 } s ? s : states.Replace('\\', '/');
         linkInfo.Text = link is null
-            ? "No AddItemInHandsProfileIK for this class (or its bases) in the mod's scripts yet — fill the files and press Write to script."
+            ? "No AddItemInHandsProfileIK for this class (or its bases) in the mod's scripts, or a script mod on the work drive, yet — fill the files and press Write to script."
             : $"Registered in {link.File}" + (string.Equals(link.ClassName, cur.Class.Name, StringComparison.OrdinalIgnoreCase) ? "" : $" (for the base class {link.ClassName})");
         linkInfo.Foreground = (Brush)FindResource(link is null ? "Editor.Warn" : "Editor.Dim");
         saved = (asiBox.Text.Trim(), ikBox.Text.Trim(), statesBox.Text.Trim());
@@ -558,7 +668,10 @@ public sealed class WeaponAnimationsPanel : DockPanel
         }
         else
         {
-            var target = SafeFiles(ModRoot(Ed.Path)!, "*.c", 2000).FirstOrDefault(f => ReadCached(f).Contains("RegisterFireArms", StringComparison.Ordinal));
+            // the mod's own script, else the script mod that already registers other weapons of this mod
+            var modDir = Path.GetFullPath(ModRoot(Ed.Path)!).TrimEnd('\\') + "\\";
+            var target = scripts.Where(s => s.Value.RegistersFireArms && s.Key.StartsWith(modDir, StringComparison.OrdinalIgnoreCase)).Select(s => s.Key).FirstOrDefault()
+                         ?? links.Select(l => l.File).FirstOrDefault(f => scripts.TryGetValue(f, out var info) && info.RegistersFireArms);
             if (target is null)
             {
                 Dlg.Fail("The mod has no script with a ModItemRegisterCallbacks ▸ RegisterFireArms override. Create one (4_World) and add it to CfgMods, or copy this line:\n"
