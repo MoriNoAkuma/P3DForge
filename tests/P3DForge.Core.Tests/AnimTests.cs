@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Numerics;
 using System.Text;
 using P3DForge.Core.Anim;
 using P3DForge.Core.Model;
@@ -245,38 +246,133 @@ public class AnimTests
         Assert.Equal(0.75, AnimRig.Phase(a with { MinValue = 0, MaxValue = 1, SourceAddress = "mirror" }, 1.25), 9);
     }
 
-    [Fact]
-    public void Anm_bone_names_come_from_the_head_chunk()
+    /// <summary>
+    /// A small .anm as Workbench writes it: "Weapon_Bolt" slides 0 → 0.1 m along X and turns 90° about Y over frames
+    /// 0..10; "Weapon_Trigger" has no keys.
+    /// </summary>
+    static byte[] SyntheticAnm(int version)
     {
-        // FORM <size> ANIM SET5 <size> FPS\0 <4> 30 HEAD <2 × 56> …
-        var ms = new MemoryStream();
-        void Bytes(string s) => ms.Write(Encoding.ASCII.GetBytes(s));
-        void BE(int v)
+        var head = new MemoryStream();
+        var data = new MemoryStream();
+        void U16(Stream s, int v) => s.Write(BitConverter.GetBytes((ushort)v));
+        void F32(Stream s, float v) => s.Write(BitConverter.GetBytes(v));
+        void Name(string n, int pad)
         {
-            Span<byte> b = stackalloc byte[4];
-            BinaryPrimitives.WriteInt32BigEndian(b, v);
-            ms.Write(b);
+            var b = Encoding.ASCII.GetBytes(n);
+            head.Write(b);
+            head.Write(new byte[pad - b.Length]);
         }
-        Bytes("FORM");
-        BE(0);
-        Bytes("ANIMSET5");
-        BE(0);
-        Bytes("FPS\0");
-        BE(4);
-        BE(30);
-        Bytes("HEAD");
-        BE(2 * 56);
-        foreach (var name in new[] { "Weapon_Bolt", "Weapon_Trigger" })
+        foreach (var (name, keyed) in new[] { ("Weapon_Bolt", true), ("Weapon_Trigger", false) })
         {
-            var rec = new byte[56];
-            Encoding.ASCII.GetBytes(name).CopyTo(rec, 0);
-            ms.Write(rec);
+            int k = keyed ? 2 : 0, scaleKeys = version == 6 ? 1 : 0;
+            if (version == 5)
+            {
+                Name(name, 32);
+                foreach (var f in new[] { 0f, 0.1f, 0f, 1f }) F32(head, f); // translation, rotation: min, range
+                foreach (var v in new[] { 11, k, k, 0 }) U16(head, v);
+            }
+            else
+            {
+                foreach (var f in new[] { 0f, 0.1f, 0f, 1f, 1f, 0f }) F32(head, f); // + scale min, range
+                foreach (var v in new[] { 11, k, k, scaleKeys }) U16(head, v);
+                head.WriteByte(0);
+                head.WriteByte((byte)name.Length);
+                Name(name, name.Length);
+            }
+            // DATA: translation, (scale), rotation — the key frames, then the values
+            foreach (var v in keyed ? new[] { 0, 10, 0, 0, 0, 65535, 0, 0 } : []) U16(data, v);
+            for (int i = 0; i < scaleKeys; i++) foreach (var v in new[] { 0, 0, 0, 0 }) U16(data, v);
+            foreach (var v in keyed ? new[] { 0, 10, 0, 0, 0, 65535, 0, 46341, 0, 46341 } : []) U16(data, v);
         }
-        Assert.Equal(["Weapon_Bolt", "Weapon_Trigger"], Anm.Bones(ms.ToArray()));
+        static byte[] Chunk(string tag, byte[] body) =>
+            [.. Encoding.ASCII.GetBytes(tag), .. BitConverter.GetBytes(BinaryPrimitives.ReverseEndianness(body.Length)), .. body];
+        byte[] set = [.. Chunk("FPS\0", BitConverter.GetBytes(30)), .. Chunk("HEAD", head.ToArray()), .. Chunk("DATA", data.ToArray())];
+        var form = Chunk($"SET{version}", set);
+        return Chunk("FORM", [.. "ANIM"u8.ToArray(), .. form]);
+    }
+
+    [Theory]
+    [InlineData(5)]
+    [InlineData(6)]
+    public void Anm_reads_bones_keys_and_samples_between_frames(int version)
+    {
+        var bytes = SyntheticAnm(version);
+        var clip = Anm.Read(bytes)!;
+        Assert.Equal((30, 11), (clip.Fps, clip.Frames));
+        Assert.Equal(["Weapon_Bolt", "Weapon_Trigger"], Anm.Bones(bytes));
+        var bolt = clip.Bones[0];
+        Assert.Equal(0.05f, bolt.Translation(5)!.Value.X, 4);
+        Assert.Equal(0.1f, bolt.Translation(30)!.Value.X, 4); // past the last key: holds it
+        var q = bolt.Rotation(10)!.Value;
+        Assert.Equal(1f, Vector3.Transform(Vector3.UnitZ, q).X, 3); // 90° about +Y
+        Assert.Equal(MathF.Sin(MathF.PI / 4), Vector3.Transform(Vector3.UnitZ, bolt.Rotation(5)!.Value).X, 3); // halfway: 45°
+        Assert.Null(clip.Bones[1].Translation(0));
+        // damaged or other files are refused, not misread
+        Assert.Null(Anm.Read(bytes[..^2]));
+        Assert.Null(Anm.Read("not an anm"u8.ToArray()));
         Assert.Empty(Anm.Bones("not an anm"u8.ToArray()));
 
         var real = @"P:\DZ\anims\anm\player\reloads\cz527\w_cz527_states.anm";
         if (File.Exists(real)) Assert.Contains("Weapon_Bolt", Anm.Bones(File.ReadAllBytes(real)));
+    }
+
+    [Fact]
+    public void Anm_pose_moves_the_remapped_selection_in_model_axes()
+    {
+        var clip = Anm.Read(SyntheticAnm(6))!;
+        var lod = Proxies.Create(Lod.Empty(0), "\\x", 1).Lod; // three points
+        lod = lod with
+        {
+            Positions = [1, 0, 0, 0, 0, 0, 5, 5, 5],
+            Tags = [new SelectionTag(1, "bolt", [1, 1, 0], new byte[lod.FaceCount])],
+        };
+        var pos = Anm.Pose(clip, 10, lod, [("bolt", "Weapon_Bolt")]);
+        // .anm: 90° about its Y (= the model's -Z) and 0.1 along X: model (1, 0, 0) → (0.1, -1, 0)
+        Assert.Equal([0.1f, -1f, 0f], pos[..3].Select(v => MathF.Round(v, 3)));
+        Assert.Equal([0.1f, 0f, 0f], pos[3..6].Select(v => MathF.Round(v, 3)));
+        Assert.Equal([5f, 5f, 5f], pos[6..]);
+        Assert.Equal(lod.Positions, Anm.Pose(clip, 10, lod, [("bolt", "Weapon_Nothing")]));
+
+        // the game's bolt-action: opening turns the bolt about the bore (model X at about 0.13 m up), so a point on
+        // the bore only slides back along it
+        var real = @"P:\DZ\anims\anm\player\reloads\cz527\w_cz527_states.anm";
+        if (!File.Exists(real)) return;
+        var bolt = Anm.Read(File.ReadAllBytes(real))!.Bones.Single(b => b.Name == "Weapon_Bolt");
+        var onBore = Vector3.Transform(new Vector3(0, 0.1294f, 0), bolt.ModelTransform(1));
+        Assert.Equal(0.1294f, onBore.Y, 3);
+        Assert.Equal(0f, onBore.Z, 3);
+        Assert.True(onBore.X > 0.05f, $"the bolt slides back (+X): {onBore.X}");
+        var handle = Vector3.Transform(new Vector3(0, 0.1294f, 0.05f), bolt.ModelTransform(1)); // the handle sticks out right (+Z)…
+        Assert.True(handle.Y > 0.17f, $"…and turns up: {handle}");
+    }
+
+    [Fact]
+    public void Asi_lists_its_animations_without_guids()
+    {
+        const string asi = "$animsetinstance {\r\n #parent \"{7324B2E80BB624A1}DZ/anims/workspaces/player/player_main/player_main_rifle.asi\"\r\n $animations {\r\n" +
+                           "   \"WeaponOperations.ErcRas.Fire\" \"{589AD8ADE3FEF13E}DZ/anims/anm/player/reloads/cz527/p_erc_fire.anm\"\r\n" +
+                           "   \"Combat.Erc.Block\" \"dz/anims/anm/block.anm\"\r\n }\r\n}";
+        Assert.Equal([("WeaponOperations.ErcRas.Fire", "DZ/anims/anm/player/reloads/cz527/p_erc_fire.anm"), ("Combat.Erc.Block", "dz/anims/anm/block.anm")],
+            WeaponLinks.AsiAnimations(asi));
+    }
+
+    [Fact]
+    public void Anm_reads_every_vanilla_animation()
+    {
+        const string root = @"P:\DZ\anims\anm";
+        Assert.SkipWhen(!Directory.Exists(root), $"{root} not available");
+        int read = 0;
+        var failed = new List<string>();
+        foreach (var f in Directory.EnumerateFiles(root, "*.anm", SearchOption.AllDirectories))
+        {
+            var bytes = File.ReadAllBytes(f);
+            if (bytes.Length < 16 || bytes[15] is not ((byte)'5' or (byte)'6')) continue; // SET4: a few old files, not read
+            var clip = Anm.Read(bytes);
+            if (clip is null || clip.Fps <= 0 || clip.Bones.Any(b => b.TFrames.Concat(b.QFrames).Any(k => k >= clip.Frames))) failed.Add(f);
+            else read++;
+        }
+        Assert.Empty(failed);
+        Assert.True(read > 1000, $"only {read} animations");
     }
 
     const string Config = """
