@@ -308,13 +308,18 @@ public sealed class ModelRenderer : IDisposable
         BuildLines(lod, sel);
     }
 
+    // Reused upload buffers (BufferData copies them): new ones per preview frame (MBs each) made the GC pause the animation.
+    float[] edgeScratch = [], pointScratch = [];
+
+    static float[] Scratch(ref float[] buffer, int length) => buffer.Length >= length ? buffer : buffer = new float[length];
+
     /// <summary>Edge and point buffers (positions + selection colours).</summary>
     void BuildLines(Lod lod, SelectionMask? sel)
     {
         // Edges: highlighted when both end points are selected.
         var rp = RenderPositions;
         var selPts = sel?.Points;
-        var ev = new float[edgeA.Length * 14];
+        var ev = Scratch(ref edgeScratch, edgeA.Length * 14);
         for (int e = 0, o = 0; e < edgeA.Length; e++)
         {
             uint a = edgeA[e], b = edgeB[e];
@@ -323,11 +328,11 @@ public sealed class ModelRenderer : IDisposable
             o = PutVertex(ev, o, rp, a, c);
             o = PutVertex(ev, o, rp, b, c);
         }
-        Upload(edgeVbo, ev);
+        Upload(edgeVbo, ev, edgeA.Length * 14);
         edgeVertices = edgeA.Length * 2;
 
         int n = lod.PointCount;
-        var pv = new float[n * 7];
+        var pv = Scratch(ref pointScratch, n * 7);
         int q = 0;
         for (int i = 0; i < n; i++)
         {
@@ -347,7 +352,7 @@ public sealed class ModelRenderer : IDisposable
     void UpdatePositions(Lod lod, float[] raw)
     {
         int n = lod.PointCount;
-        var rp = new float[n * 3];
+        var rp = RenderPositions.Length == n * 3 ? RenderPositions : new float[n * 3]; // overwritten: a new array per animation frame kept the GC busy
         var min = new Vector3(float.MaxValue);
         var max = new Vector3(float.MinValue);
         for (int i = 0; i < n; i++)
