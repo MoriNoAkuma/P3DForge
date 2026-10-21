@@ -46,6 +46,7 @@ public sealed class WeaponAnimationsPanel : DockPanel
     readonly ToggleButton playButton = new() { Content = "▶ Play", FontSize = 12, Padding = new Thickness(8, 1, 8, 1), IsEnabled = false, ToolTip = "Plays the animation in a loop" };
     readonly TextBlock frameText = new() { FontSize = 12, Width = 64, VerticalAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Right };
     TimeSpan playLast;
+    double playDue;
     AnmClip? clip;
     List<(string ModelBone, string AnmBone)> clipLinks = [];
     int previewLod = -1;
@@ -128,6 +129,7 @@ public sealed class WeaponAnimationsPanel : DockPanel
         playButton.Checked += (_, _) =>
         {
             playLast = TimeSpan.Zero;
+            playDue = 0;
             CompositionTarget.Rendering += PlayFrame;
         };
         playButton.Unchecked += (_, _) => CompositionTarget.Rendering -= PlayFrame;
@@ -583,14 +585,17 @@ public sealed class WeaponAnimationsPanel : DockPanel
         ShowPose();
     }
 
-    // Steps by the real time since the last screen frame: a fixed step per timer tick stuttered, as Windows timer ticks are uneven.
+    // Steps by the real time of the screen frames (a fixed step per timer tick stuttered: Windows timer ticks are uneven)
+    // and poses at most at the clip's own rate, so every other frame of a 60 Hz screen stays free for the camera.
     void PlayFrame(object? sender, EventArgs e)
     {
         var now = ((RenderingEventArgs)e).RenderingTime;
         if (now == playLast) return; // Rendering can fire more than once per frame
-        double dt = playLast == TimeSpan.Zero ? 0 : Math.Min((now - playLast).TotalSeconds, 0.1);
+        if (playLast != TimeSpan.Zero) playDue += Math.Min((now - playLast).TotalSeconds, 0.1);
         playLast = now;
-        if (clip is { Frames: > 1 } c) frameSlider.Value = (frameSlider.Value + c.Fps * dt) % (c.Frames - 1);
+        if (clip is not { Frames: > 1, Fps: > 0 } c || playDue < 0.75 / c.Fps) return; // 0.75: two 60 Hz frames sum to a hair under 1/30 s
+        frameSlider.Value = (frameSlider.Value + c.Fps * playDue) % (c.Frames - 1);
+        playDue = 0;
     }
 
     void ShowPose()
