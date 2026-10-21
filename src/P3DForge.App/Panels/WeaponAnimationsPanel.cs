@@ -1,12 +1,16 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using P3DForge.App.Anim;
 using P3DForge.App.Dialogs;
 using P3DForge.App.Editor;
+using P3DForge.App.Scene;
 using P3DForge.App.Services;
+using P3DForge.App.Viewport;
 using P3DForge.Core.Anim;
 using P3DForge.Core.IO;
 using P3DForge.Core.Model;
@@ -18,7 +22,8 @@ namespace P3DForge.App.Panels;
 /// the .asi / IK .anm / states .anm they are registered with (ModItemRegisterCallbacks ▸ AddItemInHandsProfileIK in
 /// the mod's scripts, weaponStateAnim in config.cpp), presets taken from the game's own weapons, a check that every
 /// bone of the states animation reaches a skeleton bone and named selection of the model through boneRemap, and
-/// buttons that write the call / the property (after showing exactly what changes).
+/// buttons that write the call / the property (after showing exactly what changes), and a viewport preview that plays
+/// the states .anm or one of the .asi's animations on the model (display only).
 /// </summary>
 public sealed class WeaponAnimationsPanel : DockPanel
 {
@@ -31,6 +36,14 @@ public sealed class WeaponAnimationsPanel : DockPanel
     readonly TextBox asiBox, ikBox, statesBox;
     readonly TextBlock linkInfo = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(6, 2, 6, 2), FontSize = 12 };
     readonly StackPanel bones = new() { Margin = new Thickness(6, 2, 6, 4) };
+    readonly ComboBox previewBox = new() { FontSize = 12, Margin = new Thickness(6, 0, 6, 2), ToolTip = "Plays an animation on the model through boneRemap — display only, the model is not changed" };
+    readonly Slider frameSlider = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 4, 0), IsEnabled = false };
+    readonly ToggleButton playButton = new() { Content = "▶ Play", FontSize = 12, Padding = new Thickness(8, 1, 8, 1), IsEnabled = false, ToolTip = "Plays the animation in a loop" };
+    readonly TextBlock frameText = new() { FontSize = 12, Width = 64, VerticalAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Right };
+    readonly DispatcherTimer playTimer = new() { Interval = TimeSpan.FromMilliseconds(33) };
+    AnmClip? clip;
+    List<(string ModelBone, string AnmBone)> clipLinks = [];
+    int previewLod = -1;
     ConfigLibrary? library;
     List<HandsLink> links = [];
     string? loadedFor;
@@ -78,17 +91,46 @@ public sealed class WeaponAnimationsPanel : DockPanel
         content.Children.Add(Section("Bones: states .anm → boneRemap → model"));
         content.Children.Add(bones);
 
+        content.Children.Add(Section("Preview in the viewport"));
+        content.Children.Add(previewBox);
+        var player = new DockPanel { Margin = new Thickness(6, 0, 6, 6) };
+        DockPanel.SetDock(playButton, Dock.Left);
+        DockPanel.SetDock(frameText, Dock.Right);
+        player.Children.Add(playButton);
+        player.Children.Add(frameText);
+        player.Children.Add(frameSlider);
+        content.Children.Add(player);
+        previewBox.SelectionChanged += (_, _) =>
+        {
+            if (!loading) PickClip();
+        };
+        frameSlider.ValueChanged += (_, _) => ShowPose();
+        playButton.Checked += (_, _) => playTimer.Start();
+        playButton.Unchecked += (_, _) => playTimer.Stop();
+        playTimer.Tick += (_, _) =>
+        {
+            if (clip is { Frames: > 1 } c) frameSlider.Value = (frameSlider.Value + c.Fps * playTimer.Interval.TotalSeconds) % (c.Frames - 1);
+        };
+
         statesBox.TextChanged += (_, _) =>
         {
-            if (!loading) ShowBones();
+            if (loading) return;
+            ShowBones();
+            FillPreview();
+        };
+        asiBox.TextChanged += (_, _) =>
+        {
+            if (!loading) FillPreview();
         };
         IsVisibleChanged += (_, _) =>
         {
             if (IsVisible) Load(force: false);
+            else StopPreview(); // a hidden panel must not leave the model drawn animated
         };
         Ed.Changed += c =>
         {
             if ((c & (Change.Document | Change.Load)) != 0 && IsVisible) Load(force: false);
+            if ((c & (Change.Model | Change.ActiveLod)) != 0 && clip is not null) ShowPose();
         };
         AnimSession.Changed += () =>
         {
@@ -227,6 +269,7 @@ public sealed class WeaponAnimationsPanel : DockPanel
             linkInfo.Text = "";
             loading = false;
             ShowBones();
+            FillPreview();
             return;
         }
         var chain = library.Chain("CfgWeapons", cur.Class.Name);
@@ -245,6 +288,7 @@ public sealed class WeaponAnimationsPanel : DockPanel
         linkInfo.Foreground = (Brush)FindResource(link is null ? "Editor.Warn" : "Editor.Dim");
         loading = false;
         ShowBones();
+        FillPreview();
     }
 
     HandsLink? LinkFor(List<ClassRef> chain)
@@ -276,13 +320,9 @@ public sealed class WeaponAnimationsPanel : DockPanel
             bones.Children.Add(Note($"Cannot read {statesFile}: {ex.Message}", "Editor.Error"));
             return;
         }
-        var remap = Current is { } cur && library is not null ? WeaponLinks.BoneRemap(library.Get("CfgWeapons", cur.Class.Name, "boneRemap", out _)) : [];
-        var skeleton = AnimSession.AllBones.Select(b => b.Name).ToList();
-        var lod = Ed.Model.Lods.FirstOrDefault(l => l.Resolution < 10000) ?? Ed.Lod;
-        var selections = lod.Selections.Select(s => s.Name).ToList();
-        var check = WeaponLinks.Check(anm, remap, skeleton, selections);
+        var check = BoneLinks(anm);
         int bad = check.Count(c => !c.Ok && c.ModelBone.Length > 0);
-        bones.Children.Add(Note($"{anm.Count} bones in {Path.GetFileName(statesFile)} · skeleton \"{AnimSession.Skeleton}\" ({skeleton.Count} bones) · named selections of LOD {Core.LodNames.Name(lod.Resolution)}",
+        bones.Children.Add(Note($"{anm.Count} bones in {Path.GetFileName(statesFile)} · skeleton \"{AnimSession.Skeleton}\" ({AnimSession.AllBones.Count()} bones) · named selections of LOD {Core.LodNames.Name(CheckedLod.Resolution)}",
             "Editor.Dim"));
         foreach (var c in check)
         {
@@ -293,6 +333,97 @@ public sealed class WeaponAnimationsPanel : DockPanel
         }
         if (bad > 0)
             bones.Children.Add(Note("Bones the game cannot move stay still in the animation. Missing skeleton bones can be added in Tools ▸ Animations (Skeleton bones).", "Editor.Dim"));
+    }
+
+    static Lod CheckedLod => Ed.Model.Lods.FirstOrDefault(l => l.Resolution < 10000) ?? Ed.Lod;
+
+    /// <summary>Every bone of an animation followed through boneRemap to the model (see <see cref="WeaponLinks.Check"/>).</summary>
+    List<BoneLink> BoneLinks(IReadOnlyList<string> anmBones)
+    {
+        var remap = Current is { } cur && library is not null ? WeaponLinks.BoneRemap(library.Get("CfgWeapons", cur.Class.Name, "boneRemap", out _)) : [];
+        return WeaponLinks.Check(anmBones, remap, AnimSession.AllBones.Select(b => b.Name).ToList(), CheckedLod.Selections.Select(s => s.Name).ToList());
+    }
+
+    // ---- preview --------------------------------------------------------------------------------
+
+    /// <summary>The animations to play: the states .anm, then the .asi's own (shortcut: its #parent files are not read).</summary>
+    void FillPreview()
+    {
+        StopPreview();
+        loading = true;
+        previewBox.Items.Clear();
+        previewBox.Items.Add(new ComboBoxItem { Content = "(off)" });
+        if (ResolveAnm(statesBox.Text) is { } states)
+            previewBox.Items.Add(new ComboBoxItem { Content = $"States: {Path.GetFileName(states)}", Tag = states, ToolTip = "Frame 0: closed · 1: open · 2: jammed (as the game uses them)" });
+        if (ResolveAnm(asiBox.Text) is { } asi)
+        {
+            try
+            {
+                foreach (var (state, anm) in WeaponLinks.AsiAnimations(File.ReadAllText(asi)))
+                    if (ResolveAnm(anm) is { } file) previewBox.Items.Add(new ComboBoxItem { Content = state, Tag = file, ToolTip = anm });
+            }
+            catch (IOException ex)
+            {
+                Ed.Log($"Weapon animations: cannot read {asi}: {ex.Message}", LogLevel.Warn);
+            }
+        }
+        previewBox.SelectedIndex = 0;
+        loading = false;
+    }
+
+    void PickClip()
+    {
+        StopPreview();
+        if ((previewBox.SelectedItem as ComboBoxItem)?.Tag is not string file) return;
+        try
+        {
+            clip = Anm.Read(File.ReadAllBytes(file));
+        }
+        catch (IOException ex)
+        {
+            Ed.Log($"Weapon animations: cannot read {file}: {ex.Message}", LogLevel.Warn);
+            return;
+        }
+        if (clip is null)
+        {
+            Ed.Log($"Weapon animations: {Path.GetFileName(file)} cannot be played (damaged, or an old SET4 file)", LogLevel.Warn);
+            return;
+        }
+        // like the game: only model bones of the skeleton move
+        clipLinks = [.. BoneLinks(clip.Bones.Select(b => b.Name).ToList()).Where(l => l.ModelBone.Length > 0 && l.InSkeleton).Select(l => (l.ModelBone, l.AnmBone))];
+        Ed.Log(clipLinks.Count == 0
+            ? $"Weapon animations: {Path.GetFileName(file)} moves no bone of this model (boneRemap / skeleton)"
+            : $"Weapon animations: {Path.GetFileName(file)} — {clip.Frames} frames at {clip.Fps} fps, moves {string.Join(", ", clipLinks.Select(l => l.ModelBone))}",
+            clipLinks.Count == 0 ? LogLevel.Warn : LogLevel.Info);
+        if (AnimSession.PreviewOn) AnimSession.SetPreview(false); // one preview at a time
+        frameSlider.Maximum = Math.Max(0, clip.Frames - 1);
+        frameSlider.IsEnabled = playButton.IsEnabled = clip.Frames > 1;
+        frameSlider.Value = 0;
+        ShowPose();
+    }
+
+    void ShowPose()
+    {
+        if (clip is null || ViewportPlugins.Current is not { } vp) return;
+        float frame = (float)frameSlider.Value;
+        frameText.Text = $"{frame:0.#} / {clip.Frames - 1}";
+        if (previewLod >= 0 && previewLod != Ed.ActiveLod) vp.SetPreviewPositions(previewLod, null);
+        previewLod = Ed.ActiveLod;
+        var pos = Anm.Pose(clip, frame, Ed.Lod, clipLinks);
+        vp.SetPreviewPositions(previewLod, pos);
+        ProxySceneHost.SetPreview(previewLod, pos);
+    }
+
+    void StopPreview()
+    {
+        playButton.IsChecked = false;
+        clip = null;
+        frameSlider.IsEnabled = playButton.IsEnabled = false;
+        frameText.Text = "";
+        if (previewLod < 0) return;
+        ViewportPlugins.Current?.SetPreviewPositions(previewLod, null);
+        ProxySceneHost.SetPreview(-1, null);
+        previewLod = -1;
     }
 
     /// <summary>A script / config path ("dz/anims/…") or an absolute file to the file on the work drive.</summary>
@@ -324,7 +455,7 @@ public sealed class WeaponAnimationsPanel : DockPanel
 
     // ---- writing --------------------------------------------------------------------------------
 
-    /// <summary>Fills the file fields: "asi=…;ik=…;states=…" or "like=svd" (a game weapon preset).</summary>
+    /// <summary>Fills the file fields: "asi=…;ik=…;states=…" or "like=svd" (a game weapon preset); "preview=states;frame=1" plays.</summary>
     public void SetFiles(string spec)
     {
         foreach (var part in spec.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -339,6 +470,12 @@ public sealed class WeaponAnimationsPanel : DockPanel
                 case "states": statesBox.Text = value; break;
                 case "like":
                     presetBox.SelectedItem = (presetBox.ItemsSource as IEnumerable<string>)?.FirstOrDefault(n => n.Equals(value, StringComparison.OrdinalIgnoreCase));
+                    break;
+                case "preview": // an item of the preview list whose text contains the value ("states", "Fire")
+                    previewBox.SelectedItem = previewBox.Items.OfType<ComboBoxItem>().FirstOrDefault(i => i.Content is string t && t.Contains(value, StringComparison.OrdinalIgnoreCase));
+                    break;
+                case "frame":
+                    if (double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var f)) frameSlider.Value = f;
                     break;
             }
         }

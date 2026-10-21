@@ -26,6 +26,7 @@ Status: **early (0.1)** — usable for everyday editing; expect rough edges. `.a
 **DayZ**
 - model.cfg animations: edit, preview with sliders, an "Animate selection" wizard (doors, wheels, levers, bolts), axis checks
 - Weapon wiring: `.asi` / `.anm` hands animations and `weaponStateAnim` / `boneRemap` checks against the skeleton
+- Weapon animations preview: plays the weapon's `.anm` files (bolt states, fire, reloads) on the model through `boneRemap`
 - Camo & Damage: preview `hiddenSelectionsTextures` / `hiddenSelectionsMaterials` variants and `healthLevels` damage states from config.cpp
 - Validate: geometry and components, mass, memory points by object kind (weapon, item, vehicle, building, clothing), shadow volume, LOD order, bone weights, UVs, hidden selections — with one-click fixes where safe
 - Binarize test: runs DayZ Tools `binarize.exe` on a temporary copy and lists its errors / warnings with links to the LOD and vertices

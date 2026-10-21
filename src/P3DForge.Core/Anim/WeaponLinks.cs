@@ -112,6 +112,16 @@ public static partial class WeaponLinks
     [GeneratedRegex("""AddItemInHandsProfileIK\s*\(\s*"(?<cls>[^"]*)"\s*,\s*"(?<asi>[^"]*)"\s*,\s*(?<beh>[^,()]+?)\s*,\s*"(?<ik>[^"]*)"\s*(?:,\s*"(?<st>[^"]*)"\s*)?\)\s*;?""")]
     private static partial Regex CallRx();
 
+    [GeneratedRegex("""^\s*"(?<state>[^"]+)"\s+"(?:\{[0-9A-Fa-f]+\})?(?<anm>[^"]+\.anm)"\s*$""", RegexOptions.Multiline | RegexOptions.IgnoreCase)]
+    private static partial Regex AsiLineRx();
+
+    /// <summary>
+    /// The animations an .asi maps (engine state "WeaponOperations.ErcRas.Fire" → "dz/anims/…/x.anm", the {GUID}
+    /// dropped), in file order. Only the file itself: its #parent chain is not followed.
+    /// </summary>
+    public static List<(string State, string Anm)> AsiAnimations(string text) =>
+        [.. AsiLineRx().Matches(text).Select(m => (m.Groups["state"].Value, m.Groups["anm"].Value))];
+
     public static List<HandsLink> FindLinks(string file, string text)
     {
         var list = new List<HandsLink>();
