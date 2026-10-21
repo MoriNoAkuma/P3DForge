@@ -373,3 +373,25 @@ Automation: steps "click" (button by caption), "scrollPanels", "perf"; command s
   weapon's own .asi (its #parent files are not read) played on the model — slider and Play; only model bones of the model.cfg
   skeleton move, through boneRemap, like in the game; display only. The status line says which parts it moves.
 - weaponAnims.setFiles also takes "preview=<text of a list item>;frame=<n>" (automation).
+
+### 0.2.1 — weapon animation wiring for any mod layout
+
+- "Like" is now "From game": it fills all three files of the chosen game weapon (a file the weapon has none of is left empty,
+  never kept from the weapon chosen before); a line under the fields says what is not written yet, Revert puts back what the
+  script / config.cpp have.
+- The AddItemInHandsProfileIK registration is also found in script mods elsewhere on the work drive (scripts packed as a mod of
+  their own, e.g. P:\MyMod_Scripts), but only for weapon classes of the model's own mod: every .c of the mod's folder and the
+  4_World scripts of the other folders; the game's data folders (DZ, scripts, bin, core, gui, graphics, languagecore, system)
+  and packed @mods are left out. What each script holds is kept in %LOCALAPPDATA%\P3DForge\handslinks.json and a script is read
+  again only when its time or size changes (the first search of a big work drive can take a minute). Write to script without a
+  registration adds to the mod's script, or to the script mod that already registers its other weapons. Unreadable
+  sub-folders no longer hide the rest of a folder.
+- Write to script when no script registers the mod's weapons yet: a form proposes the new script (the weapon's PBO folder
+  \scripts\4_World\<pbo>_WeaponAnimations.c, a modded ModItemRegisterCallbacks ▸ RegisterFireArms), its folder as the game sees it
+  (the PBO prefix learnt from model=: P:\MyPack\guns with model = "\guns\..." gives guns/scripts/4_World) and the config.cpp
+  whose CfgMods gets it; both are shown before writing. A config without CfgMods gets a whole CfgMods class (<pbo>_Scripts,
+  worldScriptModule); an existing worldScriptModule gets the folder in its files[]; a CfgMods without one is left to the author.
+- A model without a weapon class (no config.cpp yet), or whose class has no boneRemap, is checked and previewed with the
+  boneRemap of the game weapon the chosen .asi is registered for (from the game's own dayzplayercfgbase.c on the work drive,
+  e.g. player_main_cz527.asi → CZ527_Base); the bone check says so. Without a model.cfg skeleton the preview moves the
+  named selections anyway, while the bone check lists which of them the game needs as skeleton bones.

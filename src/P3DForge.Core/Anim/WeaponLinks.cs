@@ -193,6 +193,62 @@ public static partial class WeaponLinks
         return null;
     }
 
+    /// <summary>
+    /// How the game names a work-drive folder: its path from the work drive with '/', minus the part the PBO prefix drops,
+    /// learnt from the model — a file "LIS\guns\rifle\x.p3d" whose config says model = "\guns\rifle\x.p3d" drops "LIS\".
+    /// </summary>
+    public static string GameFolder(string folder, string modelFile, string modelValue)
+    {
+        var f = folder.Replace('/', '\\').Trim('\\');
+        var file = modelFile.Replace('/', '\\').Trim('\\');
+        var model = ConfigLibrary.NormalizeModel(modelValue);
+        if (file.EndsWith(model, StringComparison.OrdinalIgnoreCase) && (file.Length == model.Length || file[^(model.Length + 1)] == '\\'))
+        {
+            var drop = file[..^model.Length];
+            if (drop.Length > 0 && f.StartsWith(drop, StringComparison.OrdinalIgnoreCase)) f = f[drop.Length..];
+        }
+        return f.Replace('\\', '/');
+    }
+
+    /// <summary>
+    /// config.cpp text that compiles <paramref name="folder"/> (as the game names it: "MyMod/scripts/4_World") as a world
+    /// script module: the same text when a worldScriptModule lists it or a folder above it; else the folder added to the
+    /// files[] of the first worldScriptModule, or — no CfgMods yet — a CfgMods class <paramref name="modName"/> appended.
+    /// Null when CfgMods has no worldScriptModule to add to (left to the author).
+    /// </summary>
+    public static string? WithWorldScripts(string text, string modName, string folder)
+    {
+        static string Norm(string p) => p.Replace('\\', '/').Trim().Trim('/').ToLowerInvariant();
+        var want = Norm(folder);
+        var nl = ConfigSpans.NewlineOf(text);
+        if (ConfigSpans.Find(text, "CfgMods") is not { } mods)
+            return text + (text.Length == 0 || text.EndsWith('\n') ? "" : nl) +
+                   $"class CfgMods{nl}{{{nl}\tclass {modName}{nl}\t{{{nl}\t\ttype = \"mod\";{nl}\t\tdependencies[] = {{\"World\"}};{nl}" +
+                   $"\t\tclass defs{nl}\t\t{{{nl}\t\t\tclass worldScriptModule{nl}\t\t\t{{{nl}\t\t\t\tvalue = \"\";{nl}" +
+                   $"\t\t\t\tfiles[] = {{\"{folder}\"}};{nl}\t\t\t}};{nl}\t\t}};{nl}\t}};{nl}}};{nl}";
+        ClassSpan? Child(ClassSpan parent, string name) =>
+            ConfigSpans.Classes(text, parent).Where(c => c.HasBody && string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase)).Select(c => (ClassSpan?)c).FirstOrDefault();
+        ClassSpan? first = null;
+        foreach (var mod in ConfigSpans.Classes(text, mods))
+        {
+            if (!mod.HasBody || Child(mod, "defs") is not { } defs || Child(defs, "worldScriptModule") is not { } world) continue;
+            first ??= world;
+            if (ConfigSpans.Property(text, world, "files") is { } files &&
+                Regex.Matches(text[files.ValueStart..files.ValueEnd], "\"([^\"]*)\"").Any(m => Norm(m.Groups[1].Value) is var have && have.Length > 0 && (want == have || want.StartsWith(have + "/"))))
+                return text;
+        }
+        if (first is not { } w) return null;
+        if (ConfigSpans.Property(text, w, "files") is { } list)
+        {
+            int close = text.LastIndexOf('}', list.ValueEnd - 1, list.ValueEnd - list.ValueStart);
+            if (close < 0) return null;
+            bool empty = text[(list.ValueStart + 1)..close].Trim().Length == 0;
+            return text[..close] + (empty ? "" : ", ") + $"\"{folder}\"" + text[close..];
+        }
+        int at = ConfigSpans.InsertPoint(text, w);
+        return text[..at] + ConfigSpans.IndentAt(text, w.Start) + $"\tfiles[] = {{\"{folder}\"}};{nl}" + text[at..];
+    }
+
     /// <summary>A new script file registering one weapon.</summary>
     public static string NewScript(string className, string asi, string ik, string states, string nl = "\r\n") =>
         $"modded class ModItemRegisterCallbacks{nl}{{{nl}\toverride void RegisterFireArms(DayZPlayerType pType, DayzPlayerItemBehaviorCfg pBehavior){nl}\t{{{nl}" +

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -32,9 +33,13 @@ public sealed class WeaponAnimationsPanel : DockPanel
     readonly TextBlock status = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(6, 4, 6, 2), FontSize = 12 };
     readonly ComboBox classBox = new() { FontSize = 12, Margin = new Thickness(6, 0, 6, 2) };
     readonly TextBlock classInfo = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(6, 2, 6, 2), FontSize = 12 };
-    readonly ComboBox presetBox = new() { FontSize = 12, Margin = new Thickness(0, 0, 0, 2), ToolTip = "Fill the three files the way a game weapon does it" };
+    readonly ComboBox presetBox = new() { FontSize = 12, Margin = new Thickness(0, 0, 0, 2), ToolTip = "Fills .asi, IK .anm and States .anm with the files a game weapon uses — nothing is written until you press Write" };
     readonly TextBox asiBox, ikBox, statesBox;
     readonly TextBlock linkInfo = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(6, 2, 6, 2), FontSize = 12 };
+    readonly TextBlock pendingInfo = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+    readonly DockPanel pendingRow = new() { Margin = new Thickness(6, 2, 6, 2), Visibility = Visibility.Collapsed };
+    /// <summary>The three files as the script / config.cpp have them (what Revert puts back).</summary>
+    (string Asi, string Ik, string States) saved = ("", "", "");
     readonly StackPanel bones = new() { Margin = new Thickness(6, 2, 6, 4) };
     readonly ComboBox previewBox = new() { FontSize = 12, Margin = new Thickness(6, 0, 6, 2), ToolTip = "Plays an animation on the model through boneRemap — display only, the model is not changed" };
     readonly Slider frameSlider = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 4, 0), IsEnabled = false };
@@ -46,6 +51,8 @@ public sealed class WeaponAnimationsPanel : DockPanel
     int previewLod = -1;
     ConfigLibrary? library;
     List<HandsLink> links = [];
+    /// <summary>The scripts of the last search (see <see cref="Scripts"/>).</summary>
+    Dictionary<string, ScriptInfo> scripts = [];
     string? loadedFor;
     bool loading;
 
@@ -73,7 +80,7 @@ public sealed class WeaponAnimationsPanel : DockPanel
         form.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         form.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         presetBox.SelectionChanged += (_, _) => ApplyPreset();
-        AddRow(form, "Like", presetBox, null);
+        AddRow(form, "From game", presetBox, null);
         asiBox = Field();
         ikBox = Field();
         statesBox = Field();
@@ -82,6 +89,19 @@ public sealed class WeaponAnimationsPanel : DockPanel
         AddRow(form, "States .anm", statesBox, () => Pick(statesBox, AnimFiles.States, "Weapon states (.anm) — moves bolt, trigger, magazine… (weaponStateAnim)"));
         content.Children.Add(form);
         content.Children.Add(linkInfo);
+        var revert = Btn("Revert", "Put back the files the script and config.cpp have", () =>
+        {
+            ShowClass();
+            loading = true;
+            presetBox.SelectedIndex = 0;
+            loading = false;
+        });
+        revert.Margin = new Thickness(6, 0, 0, 0);
+        DockPanel.SetDock(revert, Dock.Right);
+        pendingRow.Children.Add(revert);
+        pendingRow.Children.Add(pendingInfo);
+        pendingInfo.Foreground = (Brush)FindResource("Editor.Warn");
+        content.Children.Add(pendingRow);
         var buttons = new WrapPanel { Margin = new Thickness(4, 2, 4, 2) };
         buttons.Children.Add(Btn("Write to script", "Adds or updates pType.AddItemInHandsProfileIK(…) for this class in the mod's ModItemRegisterCallbacks script", WriteScript));
         buttons.Children.Add(Btn("Write weaponStateAnim", "Sets weaponStateAnim of this class in its config.cpp to the states .anm", WriteConfig));
@@ -117,10 +137,18 @@ public sealed class WeaponAnimationsPanel : DockPanel
             if (loading) return;
             ShowBones();
             FillPreview();
+            UpdatePending();
         };
         asiBox.TextChanged += (_, _) =>
         {
-            if (!loading) FillPreview();
+            if (loading) return;
+            ShowBones(); // without a weapon class the .asi's game weapon gives the boneRemap
+            FillPreview();
+            UpdatePending();
+        };
+        ikBox.TextChanged += (_, _) =>
+        {
+            if (!loading) UpdatePending();
         };
         IsVisibleChanged += (_, _) =>
         {
@@ -162,14 +190,19 @@ public sealed class WeaponAnimationsPanel : DockPanel
             status.Text = "Save the model first — its config.cpp and scripts are looked up around it.";
             return;
         }
-        status.Text = "Reading config.cpp files and scripts…";
+        status.Text = File.Exists(ScriptCacheFile)
+            ? "Reading config.cpp files and scripts…"
+            : "Reading config.cpp files and scripts — the first search of the work drive reads every script once and can take a minute…";
         status.Foreground = (Brush)FindResource("Editor.Dim");
         var modRoot = ModRoot(p3d)!;
         var projectRoot = AppServices.Settings.ProjectRoot;
-        var (lib, found, scriptLinks, warnings) = await Task.Run(() => Scan(p3d, modRoot, projectRoot, force));
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var (lib, found, scriptLinks, warnings, scriptFiles) = await Task.Run(() => Scan(p3d, modRoot, projectRoot));
+        if (watch.ElapsedMilliseconds > 1000) Ed.Log($"[perf] weapon animations: configs and scripts read in {watch.ElapsedMilliseconds} ms");
         if (loadedFor != p3d) return;
         library = lib;
         links = scriptLinks;
+        scripts = scriptFiles;
         loading = true;
         classBox.Items.Clear();
         foreach (var (c, model, exact) in found)
@@ -179,7 +212,7 @@ public sealed class WeaponAnimationsPanel : DockPanel
         loading = false;
         status.Text = found.Count == 0
             ? $"No CfgWeapons class in the config.cpp files of {modRoot} has model = …\\{Path.GetFileName(p3d)}."
-            : $"{found.Count} weapon class{(found.Count == 1 ? "" : "es")} use this model · {lib.Files.Count} config files · {scriptLinks.Count} hands registrations in {modRoot}";
+            : $"{found.Count} weapon class{(found.Count == 1 ? " uses" : "es use")} this model · {lib.Files.Count} config files · {scriptLinks.Count} hands registration{(scriptLinks.Count == 1 ? "" : "s")} (in {modRoot} and script mods of its weapons on the work drive)";
         if (warnings.Count > 0) status.Text += "\n⚠ " + string.Join("\n⚠ ", warnings.Take(4));
         status.Foreground = (Brush)FindResource(found.Count == 0 || warnings.Count > 0 ? "Editor.Warn" : "Editor.Dim");
         if (classBox.Items.Count > 0) classBox.SelectedIndex = 0;
@@ -198,7 +231,7 @@ public sealed class WeaponAnimationsPanel : DockPanel
         return text;
     }
 
-    static (ConfigLibrary, List<(ClassRef, string, bool)>, List<HandsLink>, List<string>) Scan(string p3d, string modRoot, string projectRoot, bool force)
+    static (ConfigLibrary, List<(ClassRef, string, bool)>, List<HandsLink>, List<string>, Dictionary<string, ScriptInfo>) Scan(string p3d, string modRoot, string projectRoot)
     {
         var warnings = new List<string>();
         var lib = new ConfigLibrary();
@@ -214,21 +247,122 @@ public sealed class WeaponAnimationsPanel : DockPanel
         foreach (var (c, model, exact) in found)
             if (!exact)
                 warnings.Add($"{c.Name}: model = \"{model}\" does not match this file ({game}) — the game looks for P:\\{ConfigLibrary.NormalizeModel(model)}");
-        var scriptLinks = new List<HandsLink>();
-        foreach (var f in SafeFiles(modRoot, "*.c", 2000))
+        // scripts often ship as a mod of their own (P:\MyMod_Scripts): those count too, but only for this mod's own weapon
+        // classes — another mod's registrations are never shown or written
+        var modDir = Path.GetFullPath(modRoot).TrimEnd('\\') + "\\";
+        bool Own(HandsLink l) => l.File.StartsWith(modDir, StringComparison.OrdinalIgnoreCase)
+                                 || lib.Find("CfgWeapons", l.ClassName) is { } c && c.File.StartsWith(modDir, StringComparison.OrdinalIgnoreCase);
+        var scripts = Scripts(projectRoot, modRoot);
+        var scriptLinks = scripts.SelectMany(s => s.Value.Links).Where(Own).ToList();
+        return (lib, found, scriptLinks, warnings, scripts);
+    }
+
+    /// <summary>Top-level work-drive folders that hold the game's own data (DayZ Tools): not searched for the mod's scripts.</summary>
+    static readonly HashSet<string> GameFolders = new(StringComparer.OrdinalIgnoreCase) { "DZ", "scripts", "bin", "core", "gui", "graphics", "languagecore", "system" };
+
+    /// <summary>What a script holds for this panel: its hands registrations, and whether it overrides RegisterFireArms.</summary>
+    sealed record ScriptInfo(DateTime Stamp, long Size, List<HandsLink> Links, bool RegistersFireArms);
+
+    static Dictionary<string, ScriptInfo>? scriptCache;
+
+    static string ScriptCacheFile => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "P3DForge", "handslinks.json");
+
+    /// <summary>
+    /// The scripts that can register this mod's weapons: every .c of the mod's own folder, and the 4_World scripts
+    /// (ModItemRegisterCallbacks lives there) of the other work-drive folders — the game's data and packed (@) mods left out.
+    /// Kept in %LOCALAPPDATA%\P3DForge\handslinks.json: a file is read again only when its time or size changes, so the
+    /// first search of a big work drive reads every script once (it can take a minute), later ones only the changes.
+    /// </summary>
+    static Dictionary<string, ScriptInfo> Scripts(string projectRoot, string modRoot)
+    {
+        lock (GameFolders)
         {
-            string text;
+            var cache = scriptCache ??= LoadScriptCache();
+            var modDir = Path.GetFullPath(modRoot).TrimEnd('\\');
+            var folders = new List<(DirectoryInfo Dir, bool Own)>();
             try
             {
-                text = ReadCached(f);
+                foreach (var d in new DirectoryInfo(projectRoot).EnumerateDirectories())
+                    if (!GameFolders.Contains(d.Name) && !d.Name.StartsWith('@')) folders.Add((d, string.Equals(d.FullName.TrimEnd('\\'), modDir, StringComparison.OrdinalIgnoreCase)));
             }
-            catch
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                continue;
+                // no work drive: only the mod's own folder
             }
-            if (text.Contains("AddItemInHandsProfileIK", StringComparison.Ordinal)) scriptLinks.AddRange(WeaponLinks.FindLinks(f, text));
+            if (!folders.Any(f => f.Own) && Directory.Exists(modDir)) folders.Add((new DirectoryInfo(modDir), true));
+            var result = new Dictionary<string, ScriptInfo>(StringComparer.OrdinalIgnoreCase);
+            bool changed = false;
+            var options = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
+            foreach (var (dir, own) in folders)
+            {
+                IEnumerable<FileInfo> files;
+                try
+                {
+                    files = dir.EnumerateFiles("*.c", options).ToList();
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    continue;
+                }
+                foreach (var f in files)
+                {
+                    if (!own && !f.FullName.Contains(@"\4_World\", StringComparison.OrdinalIgnoreCase)) continue;
+                    // the time and size come with the folder listing: an unchanged script is not opened again
+                    if (!cache.TryGetValue(f.FullName, out var info) || info.Stamp != f.LastWriteTimeUtc || info.Size != f.Length)
+                    {
+                        cache[f.FullName] = info = ReadScript(f);
+                        changed = true;
+                    }
+                    result[f.FullName] = info;
+                }
+            }
+            var root = Path.GetFullPath(projectRoot);
+            foreach (var gone in cache.Keys.Where(k => k.StartsWith(root, StringComparison.OrdinalIgnoreCase) && !result.ContainsKey(k)).ToList())
+                changed |= cache.Remove(gone);
+            if (changed) SaveScriptCache(cache);
+            return result;
         }
-        return (lib, found, scriptLinks, warnings);
+    }
+
+    static ScriptInfo ReadScript(FileInfo f)
+    {
+        try
+        {
+            var text = File.ReadAllText(f.FullName);
+            var links = text.Contains("AddItemInHandsProfileIK", StringComparison.Ordinal) ? WeaponLinks.FindLinks(f.FullName, text) : [];
+            return new ScriptInfo(f.LastWriteTimeUtc, f.Length, links, text.Contains("RegisterFireArms", StringComparison.Ordinal));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return new ScriptInfo(f.LastWriteTimeUtc, f.Length, [], false);
+        }
+    }
+
+    static Dictionary<string, ScriptInfo> LoadScriptCache()
+    {
+        try
+        {
+            using var fs = File.OpenRead(ScriptCacheFile);
+            if (JsonSerializer.Deserialize<Dictionary<string, ScriptInfo>>(fs) is { } saved) return new(saved, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or NotSupportedException)
+        {
+            // no cache yet, or an old one: the scripts are read again
+        }
+        return new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    static void SaveScriptCache(Dictionary<string, ScriptInfo> cache)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(ScriptCacheFile)!);
+            File.WriteAllText(ScriptCacheFile, JsonSerializer.Serialize(cache));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // only a cache
+        }
     }
 
     static void TryAdd(ConfigLibrary lib, string file, List<string> warnings)
@@ -247,7 +381,8 @@ public sealed class WeaponAnimationsPanel : DockPanel
     {
         try
         {
-            return Directory.Exists(dir) ? Directory.EnumerateFiles(dir, pattern, SearchOption.AllDirectories).Take(max).ToList() : [];
+            // one unreadable sub-folder must not hide the rest
+            return Directory.Exists(dir) ? Directory.EnumerateFiles(dir, pattern, new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true }).Take(max).ToList() : [];
         }
         catch
         {
@@ -267,9 +402,11 @@ public sealed class WeaponAnimationsPanel : DockPanel
             classInfo.Text = "";
             asiBox.Text = ikBox.Text = statesBox.Text = "";
             linkInfo.Text = "";
+            saved = ("", "", "");
             loading = false;
             ShowBones();
             FillPreview();
+            UpdatePending();
             return;
         }
         var chain = library.Chain("CfgWeapons", cur.Class.Name);
@@ -283,12 +420,27 @@ public sealed class WeaponAnimationsPanel : DockPanel
         ikBox.Text = link?.Ik ?? "";
         statesBox.Text = link?.States is { Length: > 0 } s ? s : states.Replace('\\', '/');
         linkInfo.Text = link is null
-            ? "No AddItemInHandsProfileIK for this class (or its bases) in the mod's scripts yet — fill the files and press Write to script."
+            ? "No AddItemInHandsProfileIK for this class (or its bases) in the mod's scripts, or a script mod on the work drive, yet — fill the files and press Write to script."
             : $"Registered in {link.File}" + (string.Equals(link.ClassName, cur.Class.Name, StringComparison.OrdinalIgnoreCase) ? "" : $" (for the base class {link.ClassName})");
         linkInfo.Foreground = (Brush)FindResource(link is null ? "Editor.Warn" : "Editor.Dim");
+        saved = (asiBox.Text.Trim(), ikBox.Text.Trim(), statesBox.Text.Trim());
         loading = false;
         ShowBones();
         FillPreview();
+        UpdatePending();
+    }
+
+    /// <summary>Says which file fields differ from what the script / config.cpp have (nothing is written before Write).</summary>
+    void UpdatePending()
+    {
+        var changed = new List<string>();
+        if (asiBox.Text.Trim() != saved.Asi) changed.Add(".asi");
+        if (ikBox.Text.Trim() != saved.Ik) changed.Add("IK .anm");
+        if (statesBox.Text.Trim() != saved.States) changed.Add("States .anm");
+        pendingRow.Visibility = changed.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        pendingInfo.Text = Current is null
+            ? "Preview only: no weapon class uses this model, so nothing can be written yet."
+            : $"Not written yet: {string.Join(", ", changed)}. Write saves it; Revert puts back what the files have.";
     }
 
     HandsLink? LinkFor(List<ClassRef> chain)
@@ -322,6 +474,8 @@ public sealed class WeaponAnimationsPanel : DockPanel
         }
         var check = BoneLinks(anm);
         int bad = check.Count(c => !c.Ok && c.ModelBone.Length > 0);
+        if (Remap().GameClass is { } gameClass)
+            bones.Children.Add(Note($"boneRemap of the game's {gameClass} (the weapon of the chosen .asi): this model has no weapon class with a boneRemap yet.", "Editor.Warn"));
         bones.Children.Add(Note($"{anm.Count} bones in {Path.GetFileName(statesFile)} · skeleton \"{AnimSession.Skeleton}\" ({AnimSession.AllBones.Count()} bones) · named selections of LOD {Core.LodNames.Name(CheckedLod.Resolution)}",
             "Editor.Dim"));
         foreach (var c in check)
@@ -338,10 +492,35 @@ public sealed class WeaponAnimationsPanel : DockPanel
     static Lod CheckedLod => Ed.Model.Lods.FirstOrDefault(l => l.Resolution < 10000) ?? Ed.Lod;
 
     /// <summary>Every bone of an animation followed through boneRemap to the model (see <see cref="WeaponLinks.Check"/>).</summary>
-    List<BoneLink> BoneLinks(IReadOnlyList<string> anmBones)
+    List<BoneLink> BoneLinks(IReadOnlyList<string> anmBones) =>
+        WeaponLinks.Check(anmBones, Remap().Pairs, AnimSession.AllBones.Select(b => b.Name).ToList(), CheckedLod.Selections.Select(s => s.Name).ToList());
+
+    /// <summary>
+    /// The boneRemap to follow: the weapon class's; without a class (or a boneRemap in its chain) that of the game weapon the
+    /// chosen .asi is registered for — so a model with no config.cpp yet can be tried with a game weapon's animations.
+    /// </summary>
+    (List<(string ModelBone, string AnmBone)> Pairs, string? GameClass) Remap()
     {
-        var remap = Current is { } cur && library is not null ? WeaponLinks.BoneRemap(library.Get("CfgWeapons", cur.Class.Name, "boneRemap", out _)) : [];
-        return WeaponLinks.Check(anmBones, remap, AnimSession.AllBones.Select(b => b.Name).ToList(), CheckedLod.Selections.Select(s => s.Name).ToList());
+        if (library is null) return ([], null);
+        if (Current is { } cur && library.Get("CfgWeapons", cur.Class.Name, "boneRemap", out _) is { } own) return (WeaponLinks.BoneRemap(own), null);
+        if (GameClassOf(asiBox.Text) is { } game && library.Get("CfgWeapons", game, "boneRemap", out _) is { } theirs) return (WeaponLinks.BoneRemap(theirs), game);
+        return ([], null);
+    }
+
+    /// <summary>The game's weapon class registered with an .asi in the game's own script (player_main_cz527.asi → CZ527_Base).</summary>
+    static string? GameClassOf(string asi)
+    {
+        var file = Path.Combine(AppServices.Settings.ProjectRoot, "scripts", "4_world", "entities", "manbase", "dayzplayer", "dayzplayercfgbase.c");
+        if (asi.Trim().Length == 0 || !File.Exists(file)) return null;
+        static string Norm(string p) => p.Replace('\\', '/').Trim().TrimStart('/').ToLowerInvariant();
+        try
+        {
+            return WeaponLinks.FindLinks(file, ReadCached(file)).FirstOrDefault(l => Norm(l.Asi) == Norm(asi))?.ClassName;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     // ---- preview --------------------------------------------------------------------------------
@@ -389,8 +568,10 @@ public sealed class WeaponAnimationsPanel : DockPanel
             Ed.Log($"Weapon animations: {Path.GetFileName(file)} cannot be played (damaged, or an old SET4 file)", LogLevel.Warn);
             return;
         }
-        // like the game: only model bones of the skeleton move
-        clipLinks = [.. BoneLinks(clip.Bones.Select(b => b.Name).ToList()).Where(l => l.ModelBone.Length > 0 && l.InSkeleton).Select(l => (l.ModelBone, l.AnmBone))];
+        // like the game: only model bones of the skeleton move — a model without a model.cfg skeleton yet shows its named
+        // selections moving (the bone check above says the game needs them as bones)
+        bool noSkeleton = !AnimSession.AllBones.Any();
+        clipLinks = [.. BoneLinks(clip.Bones.Select(b => b.Name).ToList()).Where(l => l.ModelBone.Length > 0 && (l.InSkeleton || noSkeleton && l.InModel)).Select(l => (l.ModelBone, l.AnmBone))];
         Ed.Log(clipLinks.Count == 0
             ? $"Weapon animations: {Path.GetFileName(file)} moves no bone of this model (boneRemap / skeleton)"
             : $"Weapon animations: {Path.GetFileName(file)} — {clip.Frames} frames at {clip.Fps} fps, moves {string.Join(", ", clipLinks.Select(l => l.ModelBone))}",
@@ -441,10 +622,12 @@ public sealed class WeaponAnimationsPanel : DockPanel
         if (loading || presetBox.SelectedIndex <= 0 || presetBox.SelectedItem is not string name) return;
         var p = AnimFiles.Presets(AppServices.Settings.ProjectRoot).FirstOrDefault(x => x.Name == name);
         if (p is null) return;
+        // all three, so no file of the weapon chosen before stays mixed in; a file the game weapon has none of is left empty
         asiBox.Text = p.Asi;
-        if (p.Ik.Length > 0) ikBox.Text = p.Ik;
-        if (p.States.Length > 0) statesBox.Text = p.States;
-        Ed.Log($"Weapon animations like the game's {name}: {p.Asi}" + (p.Ik.Length == 0 ? " (no IK .anm found — choose one)" : "") + (p.States.Length == 0 ? " (no states .anm found — choose one)" : ""));
+        ikBox.Text = p.Ik;
+        statesBox.Text = p.States;
+        Ed.Log($"Weapon animations from the game's {name}: {p.Asi}" + (p.Ik.Length == 0 ? " (no IK .anm found — choose one)" : "") + (p.States.Length == 0 ? " (no states .anm found — choose one)" : ""),
+            p.Ik.Length == 0 || p.States.Length == 0 ? LogLevel.Warn : LogLevel.Info);
     }
 
     void Pick(TextBox box, Func<string, string?, List<string>> source, string title)
@@ -515,11 +698,13 @@ public sealed class WeaponAnimationsPanel : DockPanel
         }
         else
         {
-            var target = SafeFiles(ModRoot(Ed.Path)!, "*.c", 2000).FirstOrDefault(f => ReadCached(f).Contains("RegisterFireArms", StringComparison.Ordinal));
+            // the mod's own script, else the script mod that already registers other weapons of this mod
+            var modDir = Path.GetFullPath(ModRoot(Ed.Path)!).TrimEnd('\\') + "\\";
+            var target = scripts.Where(s => s.Value.RegistersFireArms && s.Key.StartsWith(modDir, StringComparison.OrdinalIgnoreCase)).Select(s => s.Key).FirstOrDefault()
+                         ?? links.Select(l => l.File).FirstOrDefault(f => scripts.TryGetValue(f, out var info) && info.RegistersFireArms);
             if (target is null)
             {
-                Dlg.Fail("The mod has no script with a ModItemRegisterCallbacks ▸ RegisterFireArms override. Create one (4_World) and add it to CfgMods, or copy this line:\n"
-                         + WeaponLinks.Call(className, asi, "pBehavior", ik, st));
+                CreateScript(cur.Class, cur.Model, className, asi, ik, st);
                 return;
             }
             file = target;
@@ -535,6 +720,54 @@ public sealed class WeaponAnimationsPanel : DockPanel
         if (!Dlg.Confirm("Write to script", $"{file}\n\nBefore:\n{before}\n\nAfter:\n{after}", "Write")) return;
         if (!WriteFile(file, newText)) return;
         Ed.Log($"Hands animation of {className} written to {file}");
+        Load(force: true);
+    }
+
+    /// <summary>
+    /// No script registers the mod's weapons yet: writes one (modded ModItemRegisterCallbacks ▸ RegisterFireArms) into the
+    /// weapon's PBO folder and adds its folder to CfgMods of that config.cpp, so the game compiles it — after showing both.
+    /// </summary>
+    void CreateScript(ClassRef cls, string modelValue, string className, string asi, string ik, string st)
+    {
+        var pbo = Path.GetDirectoryName(cls.File)!;
+        static string Id(string s) => new(s.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray());
+        var defaultFile = Path.Combine(pbo, "scripts", "4_World", $"{Id(Path.GetFileName(pbo))}_WeaponAnimations.c");
+        var defaultFolder = WeaponLinks.GameFolder(AppServices.NormalizeGamePath(Path.GetDirectoryName(defaultFile)!), AppServices.NormalizeGamePath(Ed.Path!), modelValue);
+        var form = new Dialogs.Ops.Form("Create the hands animation script",
+                "No script of this mod registers its weapons yet. P3D Forge writes one (modded ModItemRegisterCallbacks ▸ RegisterFireArms) and adds its folder to CfgMods of config.cpp, so the game compiles it. Both are shown before anything is written.")
+            .Text("file", "Script file", defaultFile, t => t.Trim().EndsWith(".c", StringComparison.OrdinalIgnoreCase) ? File.Exists(t.Trim()) ? "The file exists already" : null : "A .c file")
+            .Text("folder", "Its folder in the game", defaultFolder, t => t.Trim().Length == 0 ? "The folder as the game sees it (PBO prefix + path)" : null)
+            .Text("config", "config.cpp", cls.File, t => File.Exists(t.Trim()) ? null : "The file does not exist");
+        if (!form.Show("Next")) return;
+        string file = form.Str("file").Trim(), folder = form.Str("folder").Trim().Replace('\\', '/'), config = form.Str("config").Trim();
+        string configText;
+        try
+        {
+            configText = File.ReadAllText(config);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Dlg.Fail($"Cannot read {config}: {ex.Message}");
+            return;
+        }
+        var newConfig = WeaponLinks.WithWorldScripts(configText, Id(Path.GetFileName(Path.GetDirectoryName(config)!)) + "_Scripts", folder);
+        var script = WeaponLinks.NewScript(className, asi, ik, st);
+        var configNote = newConfig is null ? $"⚠ CfgMods of {config} has no worldScriptModule — add \"{folder}\" to the files[] of one yourself, or the game will not compile the script."
+            : ReferenceEquals(newConfig, configText) ? $"{config} compiles \"{folder}\" already."
+            : $"{config}: \"{folder}\" is added to CfgMods ▸ worldScriptModule.";
+        if (!Dlg.Confirm("Create the hands animation script", $"New file {file}:\n\n{script}\n{configNote}", "Create")) return;
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Dlg.Fail($"Cannot create {Path.GetDirectoryName(file)}: {ex.Message}");
+            return;
+        }
+        if (!WriteFile(file, script)) return;
+        if (newConfig is not null && !ReferenceEquals(newConfig, configText) && !WriteFile(config, newConfig)) return;
+        Ed.Log($"Hands animation of {className}: new script {file}" + (newConfig is null ? " — add its folder to CfgMods yourself" : ""), newConfig is null ? LogLevel.Warn : LogLevel.Info);
         Load(force: true);
     }
 
