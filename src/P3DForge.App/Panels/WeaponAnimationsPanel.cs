@@ -45,7 +45,7 @@ public sealed class WeaponAnimationsPanel : DockPanel
     readonly Slider frameSlider = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 4, 0), IsEnabled = false };
     readonly ToggleButton playButton = new() { Content = "▶ Play", FontSize = 12, Padding = new Thickness(8, 1, 8, 1), IsEnabled = false, ToolTip = "Plays the animation in a loop" };
     readonly TextBlock frameText = new() { FontSize = 12, Width = 64, VerticalAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Right };
-    readonly DispatcherTimer playTimer = new() { Interval = TimeSpan.FromMilliseconds(33) };
+    TimeSpan playLast;
     AnmClip? clip;
     List<(string ModelBone, string AnmBone)> clipLinks = [];
     int previewLod = -1;
@@ -125,12 +125,12 @@ public sealed class WeaponAnimationsPanel : DockPanel
             if (!loading) PickClip();
         };
         frameSlider.ValueChanged += (_, _) => ShowPose();
-        playButton.Checked += (_, _) => playTimer.Start();
-        playButton.Unchecked += (_, _) => playTimer.Stop();
-        playTimer.Tick += (_, _) =>
+        playButton.Checked += (_, _) =>
         {
-            if (clip is { Frames: > 1 } c) frameSlider.Value = (frameSlider.Value + c.Fps * playTimer.Interval.TotalSeconds) % (c.Frames - 1);
+            playLast = TimeSpan.Zero;
+            CompositionTarget.Rendering += PlayFrame;
         };
+        playButton.Unchecked += (_, _) => CompositionTarget.Rendering -= PlayFrame;
 
         statesBox.TextChanged += (_, _) =>
         {
@@ -583,6 +583,16 @@ public sealed class WeaponAnimationsPanel : DockPanel
         ShowPose();
     }
 
+    // Steps by the real time since the last screen frame: a fixed step per timer tick stuttered, as Windows timer ticks are uneven.
+    void PlayFrame(object? sender, EventArgs e)
+    {
+        var now = ((RenderingEventArgs)e).RenderingTime;
+        if (now == playLast) return; // Rendering can fire more than once per frame
+        double dt = playLast == TimeSpan.Zero ? 0 : Math.Min((now - playLast).TotalSeconds, 0.1);
+        playLast = now;
+        if (clip is { Frames: > 1 } c) frameSlider.Value = (frameSlider.Value + c.Fps * dt) % (c.Frames - 1);
+    }
+
     void ShowPose()
     {
         if (clip is null || ViewportPlugins.Current is not { } vp) return;
@@ -657,6 +667,7 @@ public sealed class WeaponAnimationsPanel : DockPanel
                 case "preview": // an item of the preview list whose text contains the value ("states", "Fire")
                     previewBox.SelectedItem = previewBox.Items.OfType<ComboBoxItem>().FirstOrDefault(i => i.Content is string t && t.Contains(value, StringComparison.OrdinalIgnoreCase));
                     break;
+                case "play": playButton.IsChecked = value == "1"; break;
                 case "frame":
                     if (double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var f)) frameSlider.Value = f;
                     break;
