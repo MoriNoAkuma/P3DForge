@@ -332,6 +332,10 @@ public class AnimTests
         Assert.Equal([0.1f, 0f, 0f], pos[3..6].Select(v => MathF.Round(v, 3)));
         Assert.Equal([5f, 5f, 5f], pos[6..]);
         Assert.Equal(lod.Positions, Anm.Pose(clip, 10, lod, [("bolt", "Weapon_Nothing")]));
+        // a reused array gets the same pose, whatever it held before
+        var reused = Enumerable.Repeat(9f, 9).ToArray();
+        Assert.Same(reused, Anm.Pose(clip, 10, lod, [("bolt", "Weapon_Bolt")], reused));
+        Assert.Equal(pos, reused);
 
         // the game's bolt-action: opening turns the bolt about the bore (model X at about 0.13 m up), so a point on
         // the bore only slides back along it

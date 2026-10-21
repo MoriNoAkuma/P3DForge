@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Numerics;
 using System.Text;
@@ -80,15 +81,19 @@ public static class Anm
 
     /// <summary>
     /// Positions (RAW, 3 per point) of <paramref name="lod"/> with the animation at <paramref name="frame"/>: each linked
-    /// .anm bone moves the named selection of its model bone (by weight), about the model's origin.
+    /// .anm bone moves the named selection of its model bone (by weight), about the model's origin. Written into
+    /// <paramref name="into"/> when it has the right size: a new array per frame of a playing animation made the GC pause the app.
     /// </summary>
     /// <remarks>shortcut: a model.cfg parent bone does not carry its children here; the vanilla weapon states animate
     /// every weapon bone on its own (the bolt's own keys include the slide).</remarks>
-    public static float[] Pose(AnmClip clip, float frame, Lod lod, IEnumerable<(string ModelBone, string AnmBone)> links)
+    public static float[] Pose(AnmClip clip, float frame, Lod lod, IEnumerable<(string ModelBone, string AnmBone)> links, float[]? into = null)
     {
         var src = lod.Positions;
-        var acc = new Vector3[lod.PointCount];
-        var wsum = new float[lod.PointCount];
+        int n = lod.PointCount;
+        var acc = ArrayPool<Vector3>.Shared.Rent(n);
+        var wsum = ArrayPool<float>.Shared.Rent(n);
+        Array.Clear(acc, 0, n);
+        Array.Clear(wsum, 0, n);
         foreach (var (modelBone, anmBone) in links)
         {
             if (lod.Selection(modelBone) is not { } sel || clip.Bones.FirstOrDefault(b => string.Equals(b.Name, anmBone, StringComparison.OrdinalIgnoreCase)) is not { } bone) continue;
@@ -102,8 +107,9 @@ public static class Anm
                 wsum[i] += w;
             }
         }
-        var pos = (float[])src.Clone();
-        for (int i = 0; i < lod.PointCount; i++)
+        var pos = into is not null && into.Length == src.Length ? into : new float[src.Length];
+        src.CopyTo(pos, 0);
+        for (int i = 0; i < n; i++)
         {
             if (wsum[i] <= 0) continue;
             var d = acc[i] / Math.Max(1f, wsum[i]);
@@ -111,6 +117,8 @@ public static class Anm
             pos[i * 3 + 1] += d.Y;
             pos[i * 3 + 2] += d.Z;
         }
+        ArrayPool<Vector3>.Shared.Return(acc);
+        ArrayPool<float>.Shared.Return(wsum);
         return pos;
     }
 

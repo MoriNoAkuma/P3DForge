@@ -47,6 +47,10 @@ public sealed class ModelRenderer : IDisposable
 
     // geometry cache keys (array identity)
     float[]? cPositions;
+    bool positionsRewritten;
+
+    /// <summary>The preview array was rewritten in place: the next <see cref="Sync"/> moves the vertices although the array is the same.</summary>
+    public void PositionsRewritten() => positionsRewritten = true;
     uint[]? cFacePoints, cFlags, cFaceTexture, cFaceMaterial, cFaceNormals;
     float[]? cFaceUV, cNormals;
     ImmutableArray<string> cStrings;
@@ -188,7 +192,8 @@ public sealed class ModelRenderer : IDisposable
             || !ReferenceEquals(lod.FaceTexture, cFaceTexture) || !ReferenceEquals(lod.FaceMaterial, cFaceMaterial) || lod.Strings != cStrings
             || !ReferenceEquals(lod.Normals, cNormals) || !ReferenceEquals(lod.FaceNormals, cFaceNormals) || !ReferenceEquals(uvSet1, cUvSet1)
             || showHidden != cShowHidden || !SameRefs(proxyTags, cProxyTags);
-        bool geometryChanged = topologyChanged || !ReferenceEquals(positions, cPositions);
+        bool geometryChanged = topologyChanged || positionsRewritten || !ReferenceEquals(positions, cPositions);
+        positionsRewritten = false;
         // Dragging (preview positions, nothing else changed): move the vertices of the existing buffers instead of
         // rebuilding the mesh — heavy models stay fluid. The full build follows when the edit is committed.
         if (geometryChanged && !topologyChanged && preview is not null && cGeom is not null && positions.Length == cPositions?.Length)

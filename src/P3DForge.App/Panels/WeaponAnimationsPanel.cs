@@ -46,6 +46,8 @@ public sealed class WeaponAnimationsPanel : DockPanel
     readonly ToggleButton playButton = new() { Content = "▶ Play", FontSize = 12, Padding = new Thickness(8, 1, 8, 1), IsEnabled = false, ToolTip = "Plays the animation in a loop" };
     readonly TextBlock frameText = new() { FontSize = 12, Width = 64, VerticalAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Right };
     TimeSpan playLast;
+    readonly float[][] poseBuffers = [[], []];
+    int poseFlip;
     double playDue;
     AnmClip? clip;
     List<(string ModelBone, string AnmBone)> clipLinks = [];
@@ -605,7 +607,9 @@ public sealed class WeaponAnimationsPanel : DockPanel
         frameText.Text = $"{frame:0.#} / {clip.Frames - 1}";
         if (previewLod >= 0 && previewLod != Ed.ActiveLod) vp.SetPreviewPositions(previewLod, null);
         previewLod = Ed.ActiveLod;
-        var pos = Anm.Pose(clip, frame, Ed.Lod, clipLinks);
+        // two arrays in turn: the proxies see a new one per frame without a new allocation (GC pauses while playing)
+        poseFlip ^= 1;
+        var pos = poseBuffers[poseFlip] = Anm.Pose(clip, frame, Ed.Lod, clipLinks, poseBuffers[poseFlip]);
         vp.SetPreviewPositions(previewLod, pos);
         ProxySceneHost.SetPreview(previewLod, pos);
     }
