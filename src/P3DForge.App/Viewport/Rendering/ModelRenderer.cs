@@ -47,6 +47,10 @@ public sealed class ModelRenderer : IDisposable
 
     // geometry cache keys (array identity)
     float[]? cPositions;
+    bool positionsRewritten;
+
+    /// <summary>The preview array was rewritten in place: the next <see cref="Sync"/> moves the vertices although the array is the same.</summary>
+    public void PositionsRewritten() => positionsRewritten = true;
     uint[]? cFacePoints, cFlags, cFaceTexture, cFaceMaterial, cFaceNormals;
     float[]? cFaceUV, cNormals;
     ImmutableArray<string> cStrings;
@@ -188,7 +192,8 @@ public sealed class ModelRenderer : IDisposable
             || !ReferenceEquals(lod.FaceTexture, cFaceTexture) || !ReferenceEquals(lod.FaceMaterial, cFaceMaterial) || lod.Strings != cStrings
             || !ReferenceEquals(lod.Normals, cNormals) || !ReferenceEquals(lod.FaceNormals, cFaceNormals) || !ReferenceEquals(uvSet1, cUvSet1)
             || showHidden != cShowHidden || !SameRefs(proxyTags, cProxyTags);
-        bool geometryChanged = topologyChanged || !ReferenceEquals(positions, cPositions);
+        bool geometryChanged = topologyChanged || positionsRewritten || !ReferenceEquals(positions, cPositions);
+        positionsRewritten = false;
         // Dragging (preview positions, nothing else changed): move the vertices of the existing buffers instead of
         // rebuilding the mesh — heavy models stay fluid. The full build follows when the edit is committed.
         if (geometryChanged && !topologyChanged && preview is not null && cGeom is not null && positions.Length == cPositions?.Length)
@@ -308,13 +313,18 @@ public sealed class ModelRenderer : IDisposable
         BuildLines(lod, sel);
     }
 
+    // Reused upload buffers (BufferData copies them): new ones per preview frame (MBs each) made the GC pause the animation.
+    float[] edgeScratch = [], pointScratch = [];
+
+    static float[] Scratch(ref float[] buffer, int length) => buffer.Length >= length ? buffer : buffer = new float[length];
+
     /// <summary>Edge and point buffers (positions + selection colours).</summary>
     void BuildLines(Lod lod, SelectionMask? sel)
     {
         // Edges: highlighted when both end points are selected.
         var rp = RenderPositions;
         var selPts = sel?.Points;
-        var ev = new float[edgeA.Length * 14];
+        var ev = Scratch(ref edgeScratch, edgeA.Length * 14);
         for (int e = 0, o = 0; e < edgeA.Length; e++)
         {
             uint a = edgeA[e], b = edgeB[e];
@@ -323,11 +333,11 @@ public sealed class ModelRenderer : IDisposable
             o = PutVertex(ev, o, rp, a, c);
             o = PutVertex(ev, o, rp, b, c);
         }
-        Upload(edgeVbo, ev);
+        Upload(edgeVbo, ev, edgeA.Length * 14);
         edgeVertices = edgeA.Length * 2;
 
         int n = lod.PointCount;
-        var pv = new float[n * 7];
+        var pv = Scratch(ref pointScratch, n * 7);
         int q = 0;
         for (int i = 0; i < n; i++)
         {
@@ -347,7 +357,7 @@ public sealed class ModelRenderer : IDisposable
     void UpdatePositions(Lod lod, float[] raw)
     {
         int n = lod.PointCount;
-        var rp = new float[n * 3];
+        var rp = RenderPositions.Length == n * 3 ? RenderPositions : new float[n * 3]; // overwritten: a new array per animation frame kept the GC busy
         var min = new Vector3(float.MaxValue);
         var max = new Vector3(float.MinValue);
         for (int i = 0; i < n; i++)

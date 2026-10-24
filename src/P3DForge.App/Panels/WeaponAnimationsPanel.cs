@@ -45,7 +45,10 @@ public sealed class WeaponAnimationsPanel : DockPanel
     readonly Slider frameSlider = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 4, 0), IsEnabled = false };
     readonly ToggleButton playButton = new() { Content = "▶ Play", FontSize = 12, Padding = new Thickness(8, 1, 8, 1), IsEnabled = false, ToolTip = "Plays the animation in a loop" };
     readonly TextBlock frameText = new() { FontSize = 12, Width = 64, VerticalAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Right };
-    readonly DispatcherTimer playTimer = new() { Interval = TimeSpan.FromMilliseconds(33) };
+    TimeSpan playLast;
+    readonly float[][] poseBuffers = [[], []];
+    int poseFlip;
+    double playDue;
     AnmClip? clip;
     List<(string ModelBone, string AnmBone)> clipLinks = [];
     int previewLod = -1;
@@ -125,12 +128,13 @@ public sealed class WeaponAnimationsPanel : DockPanel
             if (!loading) PickClip();
         };
         frameSlider.ValueChanged += (_, _) => ShowPose();
-        playButton.Checked += (_, _) => playTimer.Start();
-        playButton.Unchecked += (_, _) => playTimer.Stop();
-        playTimer.Tick += (_, _) =>
+        playButton.Checked += (_, _) =>
         {
-            if (clip is { Frames: > 1 } c) frameSlider.Value = (frameSlider.Value + c.Fps * playTimer.Interval.TotalSeconds) % (c.Frames - 1);
+            playLast = TimeSpan.Zero;
+            playDue = 0;
+            CompositionTarget.Rendering += PlayFrame;
         };
+        playButton.Unchecked += (_, _) => CompositionTarget.Rendering -= PlayFrame;
 
         statesBox.TextChanged += (_, _) =>
         {
@@ -583,6 +587,19 @@ public sealed class WeaponAnimationsPanel : DockPanel
         ShowPose();
     }
 
+    // Steps by the real time of the screen frames (a fixed step per timer tick stuttered: Windows timer ticks are uneven)
+    // and poses at most at the clip's own rate, so every other frame of a 60 Hz screen stays free for the camera.
+    void PlayFrame(object? sender, EventArgs e)
+    {
+        var now = ((RenderingEventArgs)e).RenderingTime;
+        if (now == playLast) return; // Rendering can fire more than once per frame
+        if (playLast != TimeSpan.Zero) playDue += Math.Min((now - playLast).TotalSeconds, 0.1);
+        playLast = now;
+        if (clip is not { Frames: > 1, Fps: > 0 } c || playDue < 0.75 / c.Fps) return; // 0.75: two 60 Hz frames sum to a hair under 1/30 s
+        frameSlider.Value = (frameSlider.Value + c.Fps * playDue) % (c.Frames - 1);
+        playDue = 0;
+    }
+
     void ShowPose()
     {
         if (clip is null || ViewportPlugins.Current is not { } vp) return;
@@ -590,7 +607,9 @@ public sealed class WeaponAnimationsPanel : DockPanel
         frameText.Text = $"{frame:0.#} / {clip.Frames - 1}";
         if (previewLod >= 0 && previewLod != Ed.ActiveLod) vp.SetPreviewPositions(previewLod, null);
         previewLod = Ed.ActiveLod;
-        var pos = Anm.Pose(clip, frame, Ed.Lod, clipLinks);
+        // two arrays in turn: the proxies see a new one per frame without a new allocation (GC pauses while playing)
+        poseFlip ^= 1;
+        var pos = poseBuffers[poseFlip] = Anm.Pose(clip, frame, Ed.Lod, clipLinks, poseBuffers[poseFlip]);
         vp.SetPreviewPositions(previewLod, pos);
         ProxySceneHost.SetPreview(previewLod, pos);
     }
@@ -657,6 +676,7 @@ public sealed class WeaponAnimationsPanel : DockPanel
                 case "preview": // an item of the preview list whose text contains the value ("states", "Fire")
                     previewBox.SelectedItem = previewBox.Items.OfType<ComboBoxItem>().FirstOrDefault(i => i.Content is string t && t.Contains(value, StringComparison.OrdinalIgnoreCase));
                     break;
+                case "play": playButton.IsChecked = value == "1"; break;
                 case "frame":
                     if (double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var f)) frameSlider.Value = f;
                     break;

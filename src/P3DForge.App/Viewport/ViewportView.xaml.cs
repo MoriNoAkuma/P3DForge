@@ -1208,6 +1208,7 @@ public partial class ViewportView : UserControl, IViewportContext
     {
         if (positions is null) previews.Remove(lodIndex);
         else previews[lodIndex] = positions;
+        if (positions is not null && lodIndex == Ed.ActiveLod) renderer?.PositionsRewritten(); // previews may reuse their arrays
         Invalidate();
     }
 

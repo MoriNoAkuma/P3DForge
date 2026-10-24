@@ -1,7 +1,9 @@
 name: Tests
 
 on:
+  # pull requests are tested by pull_request; push only for main, otherwise each PR commit runs twice
   push:
+    branches: [main]
   pull_request:
 
 jobs:
